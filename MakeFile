@@ -1,0 +1,7 @@
+all: backend frontend
+
+backend: backend.c
+	gcc backend.c -o backend
+
+frontend: frontend.c
+	gcc frontend.c -o frontend
