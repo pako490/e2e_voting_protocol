@@ -1,0 +1,30 @@
+
+E2E voting protocol to do list:
+
+Frontend:
+    -display ballot options
+    -collect voter input
+    -voting module
+    -send vote request
+    -receive backend response
+    -display receipt
+    -handle invalid or used key errors
+    -handle connection errors
+    -input validation before sending
+
+
+Middleware: 
+    - message structure (change to bits?)
+    - RSA encryption/decryption
+    - 
+
+
+Backend:
+    - key verification 
+        - send ballot
+        - send receipt 
+
+    - receipt generation 
+    - key "removal" -- move to used category
+    = key loader 
+    - ballot loader? 

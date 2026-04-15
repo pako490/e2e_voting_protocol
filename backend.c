@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 
 #include "protocol.h"
+#include "comm.h"
 
 static int next_receipt_id(void) {
     static int id = 1000;
@@ -19,6 +20,7 @@ int main(void) {
 
     ClientMessage incoming;
     ServerMessage outgoing;
+    uint32_t received_size = 0;
 
     //creates socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -53,7 +55,8 @@ int main(void) {
 
     printf("[BACKEND] Listening on %s:%d\n", SERVER_ADDR, SERVER_PORT);
 
-    while (1) {
+
+    while (1) { 
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
             perror("accept");
@@ -63,12 +66,14 @@ int main(void) {
         printf("[BACKEND] Client connected\n");
 
         memset(&incoming, 0, sizeof(incoming));
-        ssize_t bytes_received = recv(client_fd, &incoming, sizeof(incoming), 0);
-        if (bytes_received <= 0) {
+        if (recv_message(client_fd, &incoming, sizeof(incoming), &received_size) <= 0) {
             perror("recv");
             close(client_fd);
             continue;
         }
+
+
+        //DECRYPTION HERE 
 
         printf("[BACKEND] Received type=%d text=\"%s\"\n", incoming.type, incoming.text);
 
@@ -78,7 +83,10 @@ int main(void) {
         snprintf(outgoing.text, sizeof(outgoing.text),
                  "Backend received your message successfully.");
 
-        if (send(client_fd, &outgoing, sizeof(outgoing), 0) < 0) {
+
+        //ENCRYPTION HERE 
+
+        if (send_message(client_fd, &outgoing, sizeof(outgoing)) < 0) {
             perror("send");
         } else {
             printf("[BACKEND] Sent receipt_id=%d\n", outgoing.receipt_id);

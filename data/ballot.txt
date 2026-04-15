@@ -1,0 +1,4 @@
+1, Candidate A
+2, Candidate B
+3, Candidate C
+4, Candidate D
