@@ -1,7 +1,7 @@
 all: backend frontend
 
 backend: backend.c
-	gcc backend.c comm.c storage.c -o backend
+	gcc backend.c comm.c storage.c codecard.c receipt.c -o backend
 
 frontend: frontend.c
 	gcc frontend.c comm.c -o frontend
