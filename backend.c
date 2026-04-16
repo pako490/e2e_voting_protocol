@@ -13,6 +13,7 @@
 #include "keyloader.h"
 #include "rsa.h" //saving the best for last
 #include "codecard.h"
+#include "receipt.h"
 
 typedef enum {
     STATE_HELLO,
