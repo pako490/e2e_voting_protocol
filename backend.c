@@ -35,6 +35,7 @@ typedef struct {
 
 static PublicKeyList voter_public_keys;
 static PrivateKeyList ballot_private_keys;
+static int vote_tally[4] = {0, 0, 0, 0};
 
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
@@ -71,6 +72,10 @@ static const RSAPrivateKey *get_ballot_private_key(void) {
     return &ballot_private_keys.keys[0];
 }
 
+static void build_tally(char *buf, size_t len)
+{
+    snprintf(buf, len,
+        "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
     snprintf(out, out_len, "%u", voter_id);
 }
@@ -114,6 +119,8 @@ static void process_message(ClientSession *session,
             char used_key_buf_auth[32];
             StoredReceipt stored;
 
+            printf("[BACKEND] Received voter_id: %u\n", incoming->voter_id);
+
             if (incoming->type != MSG_HELLO) {
                 set_error(outgoing, "Expected hello message.");
                 return;
@@ -121,6 +128,19 @@ static void process_message(ClientSession *session,
 
             session->voter_id = incoming->voter_id;
             session->auth_key_id = incoming->voter_id;
+
+            if (session->voter_id == 0) {
+                //tally
+                char buf[256];
+                build_tally(buf, sizeof(buf));
+
+                outgoing->type = MSG_STATUS;
+                outgoing->status = STATUS_YES;
+                snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
+
+                session->state = STATE_DONE;
+                return;
+            }
 
             auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
             if (auth_pub == NULL) {
@@ -246,6 +266,12 @@ static void process_message(ClientSession *session,
             }
 
             session->selected_choice = (uint32_t)decrypted_vote;
+            
+            //store vote tallies 
+            if (session->selected_choice >= 1 && session->selected_choice <= 4) {
+                vote_tally[session->selected_choice - 1]++;
+            }
+
             session->receipt_id = next_receipt_id();
 
             voter_id_to_key_string(session->voter_id,
@@ -303,7 +329,13 @@ static void process_message(ClientSession *session,
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
+            outgoing->key_id = auth_pub->key_id;
+            outgoing->receipt_id = session->receipt_id;
             outgoing->choice_id = session->selected_choice;
+            outgoing->value = encrypted_receipt_value;
+            outgoing->modulus_n = auth_pub->n;
+            snprintf(outgoing->payload, sizeof(outgoing->payload),
+                     "Decrypt the receipt value and check your code card.");
 
             session->state = STATE_DONE;
             return;
