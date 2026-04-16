@@ -80,12 +80,30 @@ void generate_keys(PublicKey *pub, PrivateKey *priv, BN_CTX *ctx) {
 }
 
 // Encrypt and Decrypt
-void encrypt(BIGNUM *c, BIGNUM *m, PublicKey *pub, BN_CTX *ctx) {
+// void encrypt(BIGNUM *c, BIGNUM *m, PublicKey *pub, BN_CTX *ctx) {
+//     BN_mod_exp(c, m, pub->e, pub->n, ctx);
+// }
+
+// Refined to return BIGNUM ciphertext (must free c later)
+BIGNUM* encrypt(BIGNUM *m, PublicKey *pub, BN_CTX *ctx) {
+    BIGNUM *c = BN_new();
+
     BN_mod_exp(c, m, pub->e, pub->n, ctx);
+
+    return c;  // caller must free
 }
 
-void decrypt(BIGNUM *m, BIGNUM *c, PrivateKey *priv, BN_CTX *ctx) {
+// void decrypt(BIGNUM *m, BIGNUM *c, PrivateKey *priv, BN_CTX *ctx) {
+//     BN_mod_exp(m, c, priv->d, priv->n, ctx);
+// }
+
+// Refined to return BIGNUM msg (must free m later)
+BIGNUM* decrypt(BIGNUM *c, PrivateKey *priv, BN_CTX *ctx) {
+    BIGNUM *m = BN_new();
+
     BN_mod_exp(m, c, priv->d, priv->n, ctx);
+
+    return m;  // caller must free
 }
 
 // Helper func to print BIGNUMS to decimal (for testing only)
@@ -96,38 +114,79 @@ void print_bn(const char *label, BIGNUM *bn) {
 }
 
 // #################### MAIN TESTING ####################
+// int main() {
+//     BN_CTX *ctx = BN_CTX_new();
+
+//     PublicKey pub;
+//     PrivateKey priv;
+
+//     init_public_key(&pub);
+//     init_private_key(&priv);
+
+//     BIGNUM *m = BN_new();
+//     BIGNUM *c = BN_new();
+//     BIGNUM *r = BN_new();
+
+//     // Generate keys
+//     generate_keys(&pub, &priv, ctx);
+
+//     // Message
+//     char msg[] = "We had 4 days";
+//     BN_set_word(m, (unsigned char)msg[0]);  // 'W' = 87
+
+//     // Just wanted to check original message
+//     print_bn("Original Message", m);
+
+//     // Encrypt
+//     encrypt(c, m, &pub, ctx);
+//     print_bn("Ciphertext", c);
+
+//     // Decrypt
+//     decrypt(r, c, &priv, ctx);
+//     print_bn("Decrypted Result", r);
+
+//     // Clean up
+//     BN_free(m);
+//     BN_free(c);
+//     BN_free(r);
+
+//     free_public_key(&pub);
+//     free_private_key(&priv);
+
+//     BN_CTX_free(ctx);
+
+//     return 0;
+// }
+
 int main() {
     BN_CTX *ctx = BN_CTX_new();
 
+    // Key init
     PublicKey pub;
     PrivateKey priv;
-
     init_public_key(&pub);
     init_private_key(&priv);
 
-    BIGNUM *m = BN_new();
-    BIGNUM *c = BN_new();
-    BIGNUM *r = BN_new();
-
-    // Generate keys
+    // Key gen (server)
     generate_keys(&pub, &priv, ctx);
 
-    // Message
+    // msg (client)
+    BIGNUM *m = BN_new();
     char msg[] = "We had 4 days";
     BN_set_word(m, (unsigned char)msg[0]);  // 'W' = 87
 
-    // Just wanted to check original message
-    print_bn("Original Message", m);
+    // Encrypt (client - testing)
+    BIGNUM *c = encrypt(m, &pub, ctx);
 
-    // Encrypt
-    encrypt(c, m, &pub, ctx);
+    // Decrypt (server - testing)
+    BIGNUM *r = decrypt(c, &priv, ctx);
+
+    // Print stuff to console
+    print_bn("Original", m);
     print_bn("Ciphertext", c);
+    print_bn("Decrypted", r);
 
-    // Decrypt
-    decrypt(r, c, &priv, ctx);
-    print_bn("Decrypted Result", r);
-
-    // Clean up
+    // Cleanup: free m, c, r, pub/priv keys, and ctx
     BN_free(m);
     BN_free(c);
     BN_free(r);
