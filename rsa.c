@@ -118,10 +118,12 @@ u64 decrypt(u64 c, u64 d_, u64 n_) {
 //for testing
 uint64_t rsa_encrypt_uint64(uint64_t message, uint64_t e, uint64_t n){
 
+    // return encrypt(message, e, n);
     return message;
 }
 
 uint64_t rsa_decrypt_uint64(uint64_t ciphertext, uint64_t d, uint64_t n){
+    // return decrypt(ciphertext, d, n);
     return ciphertext;
 }
 

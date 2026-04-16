@@ -28,22 +28,39 @@ typedef struct {
     uint64_t auth_challenge;
     uint32_t selected_choice;
     uint32_t receipt_id;
+    CodeCard code_card;
+    VoteReceipt receipt;
 } ClientSession;
 
 static PublicKeyList voter_public_keys;
 static PrivateKeyList ballot_private_keys;
 static int vote_tally[4] = {0, 0, 0, 0};
 
-static uint32_t next_receipt_id(void) {
-    static uint32_t id = 1000;
-    return id++;
-}
-
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
     outgoing->type = MSG_ERROR;
     outgoing->status = STATUS_NO;
     snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", message);
+}
+
+static int append_code_card_text(char *buffer, size_t buffer_size, const CodeCard *card) {
+    size_t used = strlen(buffer);
+
+    int n = snprintf(buffer + used, buffer_size - used,
+                     "\nCode Card\n"
+                     "1 -> %s\n"
+                     "2 -> %s\n"
+                     "3 -> %s\n"
+                     "4 -> %s\n"
+                     "Confirmation Code -> %s\n",
+                     card->entries[0].vote_code,
+                     card->entries[1].vote_code,
+                     card->entries[2].vote_code,
+                     card->entries[3].vote_code,
+                     card->confirm_code);
+
+    if (n < 0 || (size_t)n >= buffer_size - used) return -1;
+    return 0;
 }
 
 static const RSAPrivateKey *get_ballot_private_key(void) {
@@ -58,6 +75,31 @@ static void build_tally(char *buf, size_t len)
 {
     snprintf(buf, len,
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
+static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
+    snprintf(out, out_len, "%u", voter_id);
+}
+
+static int format_receipt_text(char *buffer, size_t buffer_size,
+                               uint32_t receipt_id,
+                               const VoteReceipt *receipt) {
+    int written = 0;
+
+    int n = snprintf(buffer + written, buffer_size - written,
+                     "Vote Receipt\nReceipt ID: %u\n",
+                     receipt_id);
+    if (n < 0 || (size_t)n >= buffer_size - written) return -1;
+    written += n;
+
+    for (int i = 0; i < NUM_CANDIDATES; i++) {
+        n = snprintf(buffer + written, buffer_size - written,
+                     "%u -> %s\n",
+                     receipt->entries[i].candidate_id,
+                     receipt->entries[i].verification_code);
+        if (n < 0 || (size_t)n >= buffer_size - written) return -1;
+        written += n;
+    }
+
+    return 0;
 }
 
 static void process_message(ClientSession *session,
@@ -102,6 +144,16 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            char used_key_buf_auth[32];
+            voter_id_to_key_string(session->voter_id, used_key_buf_auth, sizeof(used_key_buf_auth));
+
+            if (is_used_key(used_key_buf_auth)) {
+                set_error(outgoing, "Voter has already voted.");
+                session->state = STATE_DONE;
+                return;
+            }
+        
+
             session->auth_challenge =
                 (uint64_t)(rand() % 10000 + 1000);
 
@@ -118,6 +170,7 @@ static void process_message(ClientSession *session,
             return;
 
         case STATE_AUTH:
+
             if (incoming->type != MSG_CHALLENGE_RESPONSE) {
                 set_error(outgoing, "Expected challenge response.");
                 return;
@@ -129,6 +182,8 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            init_code_card(&session->code_card);
+
             ballot_priv = get_ballot_private_key();
             if (ballot_priv == NULL) {
                 set_error(outgoing, "No ballot key loaded.");
@@ -138,6 +193,13 @@ static void process_message(ClientSession *session,
 
             if (build_ballot_text(outgoing->payload, sizeof(outgoing->payload)) < 0) {
                 set_error(outgoing, "Failed to build ballot.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            if (append_code_card_text(outgoing->payload, sizeof(outgoing->payload),
+                                    &session->code_card) < 0) {
+                set_error(outgoing, "Failed to append code card.");
                 session->state = STATE_DONE;
                 return;
             }
@@ -157,7 +219,12 @@ static void process_message(ClientSession *session,
             session->state = STATE_BALLOT;
             return;
 
-        case STATE_BALLOT:
+        case STATE_BALLOT: {
+            unsigned char ciphertext_buf[64];
+            int cipher_len;
+            char used_key_buf_ballot[32];
+            StoredReceipt stored;
+
             if (incoming->type != MSG_VOTE) {
                 set_error(outgoing, "Expected vote message.");
                 return;
@@ -187,6 +254,16 @@ static void process_message(ClientSession *session,
             }
 
             session->receipt_id = next_receipt_id();
+
+            voter_id_to_key_string(session->voter_id,
+                                   used_key_buf_ballot,
+                                   sizeof(used_key_buf_ballot));
+
+            if (append_used_key(used_key_buf_ballot) < 0) {
+                set_error(outgoing, "Failed to record used voter.");
+                session->state = STATE_DONE;
+                return;
+            }
 
             if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
                 set_error(outgoing, "Failed to create code card value.");

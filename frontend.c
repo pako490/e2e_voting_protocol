@@ -99,7 +99,7 @@ int main(void) {
         return 1;
     }
 
-    printf("Enter your private key d for voter %u: ", voter_id);
+    printf("Enter your private key for voter %u: ", voter_id);
     if (scanf("%llu", (unsigned long long *)&auth_private_d) != 1) {
         fprintf(stderr, "Invalid private key\n");
         close(sock_fd);
@@ -108,6 +108,10 @@ int main(void) {
 
     decrypted_challenge =
         rsa_decrypt_uint64(incoming.value, auth_private_d, incoming.modulus_n);
+    
+    
+    //checking authentication
+    printf("%llu", decrypted_challenge);
 
     memset(&outgoing, 0, sizeof(outgoing));
     outgoing.type = MSG_CHALLENGE_RESPONSE;
@@ -188,15 +192,7 @@ int main(void) {
         return 1;
     }
 
-    decrypted_receipt_value =
-        rsa_decrypt_uint64(incoming.value, auth_private_d, incoming.modulus_n);
-
-    codecard_text_for_value(decrypted_receipt_value, receipt_text, sizeof(receipt_text));
-
-    printf("\n[FRONTEND] Receipt ID: %u\n", incoming.receipt_id);
-    printf("[FRONTEND] Receipt code value: %llu\n",
-           (unsigned long long)decrypted_receipt_value);
-    printf("[FRONTEND] Code card result: %s\n", receipt_text);
+    printf("\n[FRONTEND] Receipt:\n%s\n", incoming.payload);
 
     close(sock_fd);
     return 0;
