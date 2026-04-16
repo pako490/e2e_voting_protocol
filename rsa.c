@@ -145,21 +145,12 @@ u64 decrypt(u64 ct, PrivateKey priv) {
 }
 
 
-<<<<<<< HEAD
-    // Message
-    u64 m = "We had 4 days"[0]; // Should return "W" in ASCII (= 87)
-
-    // Placeholder for testing
-    u64 a = encrypt(m, pub);
-    u64 b = decrypt(a, priv);
-=======
 //for testing
 uint64_t rsa_encrypt_uint64(uint64_t message, uint64_t e, uint64_t n){
 
     // return encrypt(message, e, n);
     return message;
 }
->>>>>>> main
 
 uint64_t rsa_decrypt_uint64(uint64_t ciphertext, uint64_t d, uint64_t n){
     // return decrypt(ciphertext, d, n);
