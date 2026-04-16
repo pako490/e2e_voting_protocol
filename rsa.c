@@ -114,20 +114,32 @@ u64 decrypt(u64 c, u64 d_, u64 n_) {
     return modexp(c, d_, n_);
 }
 
-// Local Testing
-int main() {
-    generate_keys();
 
-    // Message
-    u64 m = "We had 4 days"[0];
+//for testing
+uint64_t rsa_encrypt_uint64(uint64_t message, uint64_t e, uint64_t n){
 
-    // Placeholder for testing
-    u64 a = encrypt(m, e, n);
-    u64 b = decrypt(a, d, n);
-
-    printf("m = %llu\n", m);
-    printf("a = %llu\n", a);
-    printf("b = %llu\n", b);
-
-    return 0;
+    return message;
 }
+
+uint64_t rsa_decrypt_uint64(uint64_t ciphertext, uint64_t d, uint64_t n){
+    return ciphertext;
+}
+
+
+// // Local Testing
+// int main() {
+//     generate_keys();
+
+//     // Message
+//     u64 m = "We had 4 days"[0];
+
+//     // Placeholder for testing
+//     u64 a = encrypt(m, e, n);
+//     u64 b = decrypt(a, d, n);
+
+//     printf("m = %llu\n", m);
+//     printf("a = %llu\n", a);
+//     printf("b = %llu\n", b);
+
+//     return 0;
+// }

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include "receipt.h"
 
 static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -47,4 +48,43 @@ void print_code_card(const CodeCard *card) {
                card->entries[i].vote_code);
     }
     printf("Confirmation Code -> %s\n", card->confirm_code);
+}
+
+
+int codecard_value_for_choice(uint32_t choice_id, uint64_t *out_value) {
+    if (out_value == NULL) {
+        return -1;
+    }
+
+    switch (choice_id) {
+        case 1: *out_value = 1101; return 0;
+        case 2: *out_value = 2202; return 0;
+        case 3: *out_value = 3303; return 0;
+        case 4: *out_value = 4404; return 0;
+        default: return -1;
+    }
+}
+
+int codecard_text_for_value(uint64_t value, char *out, size_t out_len) {
+    if (out == NULL || out_len == 0) {
+        return -1;
+    }
+
+    switch (value) {
+        case 1101:
+            snprintf(out, out_len, "Choice 1 confirmed");
+            return 0;
+        case 2202:
+            snprintf(out, out_len, "Choice 2 confirmed");
+            return 0;
+        case 3303:
+            snprintf(out, out_len, "Choice 3 confirmed");
+            return 0;
+        case 4404:
+            snprintf(out, out_len, "Choice 4 confirmed");
+            return 0;
+        default:
+            snprintf(out, out_len, "Unknown receipt value");
+            return -1;
+    }
 }

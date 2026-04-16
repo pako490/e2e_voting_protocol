@@ -8,11 +8,14 @@
 
 #include "protocol.h"
 #include "comm.h"
+#include "rsa.h"  //saving the best for last
+#include "codecard.h"
 
 static int read_line(char *buf, size_t len) {
     if (fgets(buf, len, stdin) == NULL) {
         return -1;
     }
+
     buf[strcspn(buf, "\n")] = '\0';
     return 0;
 }
@@ -24,6 +27,14 @@ int main(void) {
     ClientMessage outgoing;
     ServerMessage incoming;
     uint32_t received_size = 0;
+
+    uint32_t voter_id = 0;
+    uint64_t auth_private_d = 0;
+    uint64_t decrypted_challenge = 0;
+    uint32_t choice_id = 0;
+    uint64_t encrypted_vote = 0;
+    uint64_t decrypted_receipt_value = 0;
+    char receipt_text[128];
 
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
@@ -44,78 +55,106 @@ int main(void) {
 
     printf("[FRONTEND] Connected to backend\n");
 
-    /*
-        STEP 1: LOGIN
-        Send MSG_LOGIN with the voter key in text
-    */
-    memset(&outgoing, 0, sizeof(outgoing));
-    outgoing.type = MSG_LOGIN;
-    outgoing.status = STATUS_NONE;
-    outgoing.choice_id = 0;
-
-    printf("Enter voter key: ");
-    if (read_line(outgoing.text, sizeof(outgoing.text)) < 0) {
-        fprintf(stderr, "[FRONTEND] Failed to read voter key\n");
+    printf("Enter voter ID: ");
+    if (scanf("%u", &voter_id) != 1) {
+        fprintf(stderr, "Invalid voter ID\n");
         close(sock_fd);
         return 1;
     }
+
+    memset(&outgoing, 0, sizeof(outgoing));
+    outgoing.type = MSG_HELLO;
+    outgoing.status = STATUS_NONE;
+    outgoing.voter_id = voter_id;
 
     if (send_message(sock_fd, &outgoing, sizeof(outgoing)) < 0) {
-        fprintf(stderr, "[FRONTEND] Failed to send login message\n");
+        fprintf(stderr, "[FRONTEND] Failed to send hello\n");
         close(sock_fd);
         return 1;
     }
 
-    printf("[FRONTEND] Login sent\n");
-
-    /*
-        STEP 2: RECEIVE BALLOT DATA OR ERROR
-    */
     memset(&incoming, 0, sizeof(incoming));
-    received_size = 0;
-
     if (recv_message(sock_fd, &incoming, sizeof(incoming), &received_size) < 0) {
-        fprintf(stderr, "[FRONTEND] Failed to receive login response\n");
+        fprintf(stderr, "[FRONTEND] Failed to receive challenge\n");
         close(sock_fd);
         return 1;
     }
 
-    if (received_size != sizeof(incoming)) {
-        fprintf(stderr, "[FRONTEND] Unexpected response size: %u bytes\n", received_size);
+    if (incoming.type == MSG_ERROR) {
+        printf("[FRONTEND] Error: %s\n", incoming.payload);
         close(sock_fd);
         return 1;
     }
 
-    if (incoming.type == MSG_ERROR || incoming.status == STATUS_NO) {
-        printf("[FRONTEND] Login failed: %s\n", incoming.text);
+    if (incoming.type != MSG_CHALLENGE) {
+        fprintf(stderr, "[FRONTEND] Expected challenge, got type=%u\n", incoming.type);
+        close(sock_fd);
+        return 1;
+    }
+
+    printf("Enter your private key d for voter %u: ", voter_id);
+    if (scanf("%llu", (unsigned long long *)&auth_private_d) != 1) {
+        fprintf(stderr, "Invalid private key\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    decrypted_challenge =
+        rsa_decrypt_uint64(incoming.value, auth_private_d, incoming.modulus_n);
+
+    memset(&outgoing, 0, sizeof(outgoing));
+    outgoing.type = MSG_CHALLENGE_RESPONSE;
+    outgoing.status = STATUS_NONE;
+    outgoing.voter_id = voter_id;
+    outgoing.key_id = incoming.key_id;
+    outgoing.value = decrypted_challenge;
+
+    if (send_message(sock_fd, &outgoing, sizeof(outgoing)) < 0) {
+        fprintf(stderr, "[FRONTEND] Failed to send challenge response\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    memset(&incoming, 0, sizeof(incoming));
+    if (recv_message(sock_fd, &incoming, sizeof(incoming), &received_size) < 0) {
+        fprintf(stderr, "[FRONTEND] Failed to receive ballot\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    if (incoming.type == MSG_ERROR) {
+        printf("[FRONTEND] Error: %s\n", incoming.payload);
         close(sock_fd);
         return 1;
     }
 
     if (incoming.type != MSG_BALLOT_DATA) {
-        fprintf(stderr, "[FRONTEND] Expected MSG_BALLOT_DATA, got type=%u\n", incoming.type);
+        fprintf(stderr, "[FRONTEND] Expected ballot data, got type=%u\n", incoming.type);
         close(sock_fd);
         return 1;
     }
 
-    printf("\n[FRONTEND] Ballot received:\n%s\n", incoming.text);
+    printf("\n[FRONTEND] Ballot:\n%s\n", incoming.payload);
 
-    /*
-        STEP 3: SEND VOTE
-        Send MSG_VOTE with choice_id filled in
-    */
+    printf("Enter your choice ID: ");
+    if (scanf("%u", &choice_id) != 1) {
+        fprintf(stderr, "Invalid choice ID\n");
+        close(sock_fd);
+        return 1;
+    }
+
+    encrypted_vote =
+        rsa_encrypt_uint64((uint64_t)choice_id, incoming.exponent_e, incoming.modulus_n);
+
     memset(&outgoing, 0, sizeof(outgoing));
     outgoing.type = MSG_VOTE;
     outgoing.status = STATUS_NONE;
-    outgoing.choice_id = 0;
-    outgoing.text[0] = '\0';
-
-    printf("Enter your ballot choice ID: ");
-    if (scanf("%u", &outgoing.choice_id) != 1) {
-        fprintf(stderr, "[FRONTEND] Invalid ballot choice input\n");
-        close(sock_fd);
-        return 1;
-    }
+    outgoing.voter_id = voter_id;
+    outgoing.key_id = incoming.key_id;
+    outgoing.choice_id = choice_id;
+    outgoing.value = encrypted_vote;
+    outgoing.modulus_n = incoming.modulus_n;
+    outgoing.exponent_e = incoming.exponent_e;
 
     if (send_message(sock_fd, &outgoing, sizeof(outgoing)) < 0) {
         fprintf(stderr, "[FRONTEND] Failed to send vote\n");
@@ -123,41 +162,34 @@ int main(void) {
         return 1;
     }
 
-    printf("[FRONTEND] Vote sent\n");
-
-    /*
-        STEP 4: RECEIVE RECEIPT OR ERROR
-    */
     memset(&incoming, 0, sizeof(incoming));
-    received_size = 0;
-
     if (recv_message(sock_fd, &incoming, sizeof(incoming), &received_size) < 0) {
-        fprintf(stderr, "[FRONTEND] Failed to receive vote response\n");
+        fprintf(stderr, "[FRONTEND] Failed to receive receipt\n");
         close(sock_fd);
         return 1;
     }
 
-    if (received_size != sizeof(incoming)) {
-        fprintf(stderr, "[FRONTEND] Unexpected receipt size: %u bytes\n", received_size);
-        close(sock_fd);
-        return 1;
-    }
-
-    if (incoming.type == MSG_ERROR || incoming.status == STATUS_NO) {
-        printf("[FRONTEND] Vote failed: %s\n", incoming.text);
+    if (incoming.type == MSG_ERROR) {
+        printf("[FRONTEND] Error: %s\n", incoming.payload);
         close(sock_fd);
         return 1;
     }
 
     if (incoming.type != MSG_RECEIPT) {
-        fprintf(stderr, "[FRONTEND] Expected MSG_RECEIPT, got type=%u\n", incoming.type);
+        fprintf(stderr, "[FRONTEND] Expected receipt, got type=%u\n", incoming.type);
         close(sock_fd);
         return 1;
     }
 
-    printf("\n[FRONTEND] Receipt received\n");
-    printf("Receipt ID: %u\n", incoming.receipt_id);
-    printf("Message: %s\n", incoming.text);
+    decrypted_receipt_value =
+        rsa_decrypt_uint64(incoming.value, auth_private_d, incoming.modulus_n);
+
+    codecard_text_for_value(decrypted_receipt_value, receipt_text, sizeof(receipt_text));
+
+    printf("\n[FRONTEND] Receipt ID: %u\n", incoming.receipt_id);
+    printf("[FRONTEND] Receipt code value: %llu\n",
+           (unsigned long long)decrypted_receipt_value);
+    printf("[FRONTEND] Code card result: %s\n", receipt_text);
 
     close(sock_fd);
     return 0;
