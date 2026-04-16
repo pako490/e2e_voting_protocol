@@ -1,210 +1,222 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#include "comm.h"
 #include "protocol.h"
+#include "comm.h"
 #include "storage.h"
+#include "keyloader.h"
+#include "rsa.h" //saving the best for last
+#include "codecard.h"
 
 typedef enum {
-    STATE_LOGIN,
+    STATE_HELLO,
+    STATE_AUTH,
     STATE_BALLOT,
-    STATE_RECEIPT,
     STATE_DONE
 } SessionState;
 
 typedef struct {
     SessionState state;
-    int authenticated;
-    char voter_key[KEY_LEN];
+    uint32_t voter_id;
+    uint32_t auth_key_id;
+    uint64_t auth_challenge;
     uint32_t selected_choice;
-    int receipt_id;
-
-    int hit_login;
-    int hit_ballot;
-    int hit_receipt;
-    int hit_done;
+    uint32_t receipt_id;
 } ClientSession;
 
-static int next_receipt_id(void) {
-    static int id = 1000;
+static PublicKeyList voter_public_keys;
+static PrivateKeyList ballot_private_keys;
+
+static uint32_t next_receipt_id(void) {
+    static uint32_t id = 1000;
     return id++;
 }
 
-static const char *state_name(SessionState state) {
-    switch (state) {
-        case STATE_LOGIN:   return "LOGIN";
-        case STATE_BALLOT:  return "BALLOT";
-        case STATE_RECEIPT: return "RECEIPT";
-        case STATE_DONE:    return "DONE";
-        default:            return "UNKNOWN";
-    }
-}
-
-static const char *msg_type_name(uint32_t type) {
-    switch (type) {
-        case MSG_NONE:        return "MSG_NONE";
-        case MSG_LOGIN:       return "MSG_LOGIN";
-        case MSG_VOTE:        return "MSG_VOTE";
-        case MSG_BALLOT_DATA: return "MSG_BALLOT_DATA";
-        case MSG_RECEIPT:     return "MSG_RECEIPT";
-        case MSG_ERROR:       return "MSG_ERROR";
-        case MSG_STATUS:      return "MSG_STATUS";
-        default:              return "UNKNOWN";
-    }
-}
-
-static const char *status_name(uint32_t status) {
-    switch (status) {
-        case STATUS_NONE: return "STATUS_NONE";
-        case STATUS_NO:   return "STATUS_NO";
-        case STATUS_YES:  return "STATUS_YES";
-        default:          return "UNKNOWN";
-    }
-}
-
-static void print_session_hits(const ClientSession *session) {
-    printf("[BACKEND] State hit counts: LOGIN=%d BALLOT=%d RECEIPT=%d DONE=%d\n",
-           session->hit_login,
-           session->hit_ballot,
-           session->hit_receipt,
-           session->hit_done);
-}
-
-static void set_error_response(ServerMessage *outgoing, const char *message) {
+static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
     outgoing->type = MSG_ERROR;
     outgoing->status = STATUS_NO;
-    snprintf(outgoing->text, sizeof(outgoing->text), "%s", message);
+    snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", message);
+}
+
+static const RSAPrivateKey *get_ballot_private_key(void) {
+    if (ballot_private_keys.count == 0) {
+        return NULL;
+    }
+
+    return &ballot_private_keys.keys[0];
+}
+
+static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
+    snprintf(out, out_len, "%u", voter_id);
 }
 
 static void process_message(ClientSession *session,
                             const ClientMessage *incoming,
                             ServerMessage *outgoing) {
-    memset(outgoing, 0, sizeof(*outgoing));
-    outgoing->status = STATUS_NONE;
+    const RSAPublicKey *auth_pub;
+    const RSAPrivateKey *ballot_priv;
+    uint64_t decrypted_vote;
+    uint64_t receipt_code_value;
+    uint64_t encrypted_receipt_value;
 
-    printf("[BACKEND] Enter process_message: state=%s, incoming_type=%s (%u), status=%s (%u)\n",
-           state_name(session->state),
-           msg_type_name(incoming->type),
-           incoming->type,
-           status_name(incoming->status),
-           incoming->status);
+    memset(outgoing, 0, sizeof(*outgoing));
 
     switch (session->state) {
-        case STATE_LOGIN:
-            session->hit_login++;
-
-            if (incoming->type != MSG_LOGIN) {
-                set_error_response(outgoing, "Expected login first.");
-                printf("[BACKEND] LOGIN rejected: wrong message type\n");
-                break;
+        case STATE_HELLO:
+            if (incoming->type != MSG_HELLO) {
+                set_error(outgoing, "Expected hello message.");
+                return;
             }
 
-            if (!is_valid_key(incoming->text)) {
-                set_error_response(outgoing, "Invalid key.");
-                printf("[BACKEND] LOGIN rejected: invalid key=%s\n", incoming->text);
-                break;
+            session->voter_id = incoming->voter_id;
+            session->auth_key_id = incoming->voter_id;
+
+            auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
+            if (auth_pub == NULL) {
+                set_error(outgoing, "Unknown voter ID.");
+                return;
             }
 
-            if (is_used_key(incoming->text)) {
-                set_error_response(outgoing, "Key already used.");
-                printf("[BACKEND] LOGIN rejected: used key=%s\n", incoming->text);
-                break;
+            char used_key_buf_auth[32];
+            voter_id_to_key_string(session->voter_id, used_key_buf_auth, sizeof(used_key_buf_auth));
+
+            if (is_used_key(used_key_buf_auth)) {
+                set_error(outgoing, "Voter has already voted.");
+                session->state = STATE_DONE;
+                return;
+            }
+        
+
+            session->auth_challenge =
+                (uint64_t)(rand() % 10000 + 1000);
+
+            outgoing->type = MSG_CHALLENGE;
+            outgoing->status = STATUS_YES;
+            outgoing->key_id = auth_pub->key_id;
+            outgoing->value =
+                rsa_encrypt_uint64(session->auth_challenge, auth_pub->e, auth_pub->n);
+            outgoing->modulus_n = auth_pub->n;
+            snprintf(outgoing->payload, sizeof(outgoing->payload),
+                     "Decrypt the challenge with your private key.");
+
+            session->state = STATE_AUTH;
+            return;
+
+        case STATE_AUTH:
+
+            if (incoming->type != MSG_CHALLENGE_RESPONSE) {
+                set_error(outgoing, "Expected challenge response.");
+                return;
             }
 
-            strncpy(session->voter_key, incoming->text, KEY_LEN - 1);
-            session->voter_key[KEY_LEN - 1] = '\0';
-            session->authenticated = 1;
+            if (incoming->value != session->auth_challenge) {
+                set_error(outgoing, "Authentication failed.");
+                session->state = STATE_DONE;
+                return;
+            }
 
-            printf("[BACKEND] LOGIN success: key=%s\n", session->voter_key);
-            printf("[BACKEND] Transition: %s -> %s\n",
-                   state_name(session->state), state_name(STATE_BALLOT));
+            ballot_priv = get_ballot_private_key();
+            if (ballot_priv == NULL) {
+                set_error(outgoing, "No ballot key loaded.");
+                session->state = STATE_DONE;
+                return;
+            }
 
-            session->state = STATE_BALLOT;
+            if (build_ballot_text(outgoing->payload, sizeof(outgoing->payload)) < 0) {
+                set_error(outgoing, "Failed to build ballot.");
+                session->state = STATE_DONE;
+                return;
+            }
 
             outgoing->type = MSG_BALLOT_DATA;
             outgoing->status = STATUS_YES;
+            outgoing->key_id = ballot_priv->key_id;
+            outgoing->modulus_n = ballot_priv->n;
 
-            if (build_ballot_text(outgoing->text, sizeof(outgoing->text)) < 0) {
-                set_error_response(outgoing, "Failed to build ballot.");
-                printf("[BACKEND] Failed to build ballot text\n");
-            }
-            break;
+            /*
+                In this demo, we reuse key_id 1 in the private list and derive the
+                public exponent from your generated data convention.
+                For the cleanest setup, also load a ballot public key list and use e from there.
+            */
+            outgoing->exponent_e = 65537;
+
+            session->state = STATE_BALLOT;
+            return;
 
         case STATE_BALLOT:
-            session->hit_ballot++;
-
             if (incoming->type != MSG_VOTE) {
-                set_error_response(outgoing, "Expected ballot submission.");
-                printf("[BACKEND] BALLOT rejected: wrong message type\n");
-                break;
+                set_error(outgoing, "Expected vote message.");
+                return;
             }
 
-            if (!session->authenticated) {
-                set_error_response(outgoing, "Not authenticated.");
-                printf("[BACKEND] BALLOT rejected: session not authenticated\n");
-                break;
+            ballot_priv = get_ballot_private_key();
+            if (ballot_priv == NULL) {
+                set_error(outgoing, "No ballot private key available.");
+                session->state = STATE_DONE;
+                return;
             }
 
-            printf("[BACKEND] Received ballot choice=%u\n", incoming->choice_id);
+            decrypted_vote =
+                rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
 
-            if (!is_valid_ballot_choice(incoming->choice_id)) {
-                set_error_response(outgoing, "Invalid ballot choice.");
-                printf("[BACKEND] BALLOT rejected: invalid choice=%u\n", incoming->choice_id);
-                break;
+            if (!is_valid_ballot_choice((uint32_t)decrypted_vote)) {
+                set_error(outgoing, "Invalid decrypted vote.");
+                session->state = STATE_DONE;
+                return;
             }
 
-            session->selected_choice = incoming->choice_id;
-
-            if (append_used_key(session->voter_key) < 0) {
-                set_error_response(outgoing, "Failed to record used key.");
-                printf("[BACKEND] BALLOT failed: could not append used key=%s\n",
-                       session->voter_key);
-                break;
-            }
-
+            session->selected_choice = (uint32_t)decrypted_vote;
             session->receipt_id = next_receipt_id();
 
-            printf("[BACKEND] BALLOT success: key=%s choice=%u receipt=%d\n",
-                   session->voter_key,
-                   session->selected_choice,
-                   session->receipt_id);
-            printf("[BACKEND] Transition: %s -> %s\n",
-                   state_name(session->state), state_name(STATE_RECEIPT));
+            char used_key_buf_ballot[32];
+            voter_id_to_key_string(session->voter_id, used_key_buf_ballot, sizeof(used_key_buf_ballot));
 
-            session->state = STATE_RECEIPT;
+            if (append_used_key(used_key_buf_ballot) < 0) {
+                set_error(outgoing, "Failed to record used voter.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
+                set_error(outgoing, "Failed to create code card value.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
+            if (auth_pub == NULL) {
+                set_error(outgoing, "Auth public key missing for receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            encrypted_receipt_value =
+                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
+            outgoing->key_id = auth_pub->key_id;
             outgoing->receipt_id = session->receipt_id;
-            snprintf(outgoing->text, sizeof(outgoing->text),
-                     "Vote accepted. Receipt issued.");
-            break;
-
-        case STATE_RECEIPT:
-            session->hit_receipt++;
-
-            printf("[BACKEND] RECEIPT state reached, preparing to finish session\n");
-            printf("[BACKEND] Transition: %s -> %s\n",
-                   state_name(session->state), state_name(STATE_DONE));
+            outgoing->choice_id = session->selected_choice;
+            outgoing->value = encrypted_receipt_value;
+            outgoing->modulus_n = auth_pub->n;
+            snprintf(outgoing->payload, sizeof(outgoing->payload),
+                     "Decrypt the receipt value and check your code card.");
 
             session->state = STATE_DONE;
-            session->hit_done++;
-
-            outgoing->type = MSG_STATUS;
-            outgoing->status = STATUS_YES;
-            snprintf(outgoing->text, sizeof(outgoing->text), "Session complete.");
-            break;
+            return;
 
         case STATE_DONE:
-            session->hit_done++;
-            set_error_response(outgoing, "Connection closed.");
-            printf("[BACKEND] DONE state reached\n");
-            break;
+        default:
+            set_error(outgoing, "Session finished.");
+            return;
     }
 }
 
@@ -215,10 +227,7 @@ static void handle_client(int client_fd) {
     uint32_t received_size = 0;
 
     memset(&session, 0, sizeof(session));
-    session.state = STATE_LOGIN;
-
-    printf("[BACKEND] New client session started\n");
-    printf("[BACKEND] Session initialized: state=%s\n", state_name(session.state));
+    session.state = STATE_HELLO;
 
     while (session.state != STATE_DONE) {
         memset(&incoming, 0, sizeof(incoming));
@@ -231,18 +240,9 @@ static void handle_client(int client_fd) {
         }
 
         if (received_size != sizeof(incoming)) {
-            fprintf(stderr, "[BACKEND] Unexpected message size: %u bytes\n", received_size);
+            fprintf(stderr, "[BACKEND] Unexpected message size: %u\n", received_size);
             break;
         }
-
-        printf("[BACKEND] Received %u bytes\n", received_size);
-        printf("[BACKEND] Incoming payload: type=%s (%u), status=%s (%u), choice_id=%u, text=\"%s\"\n",
-               msg_type_name(incoming.type),
-               incoming.type,
-               status_name(incoming.status),
-               incoming.status,
-               incoming.choice_id,
-               incoming.text);
 
         process_message(&session, &incoming, &outgoing);
 
@@ -251,29 +251,12 @@ static void handle_client(int client_fd) {
             break;
         }
 
-        printf("[BACKEND] Outgoing payload: type=%s (%u), status=%s (%u), receipt_id=%u, text=\"%s\"\n",
-               msg_type_name(outgoing.type),
-               outgoing.type,
-               status_name(outgoing.status),
-               outgoing.status,
-               outgoing.receipt_id,
-               outgoing.text);
-
-        if (session.state == STATE_RECEIPT) {
-            session.hit_receipt++;
-            printf("[BACKEND] Receipt delivered, ending session after receipt\n");
-            printf("[BACKEND] Transition: %s -> %s\n",
-                   state_name(session.state), state_name(STATE_DONE));
-            session.state = STATE_DONE;
-            session.hit_done++;
+        if (outgoing.type == MSG_ERROR) {
+            break;
         }
     }
 
-    print_session_hits(&session);
-    printf("[BACKEND] Session closing in state=%s\n", state_name(session.state));
-
     close(client_fd);
-    printf("[BACKEND] Client session ended\n");
 }
 
 int main(void) {
@@ -284,8 +267,12 @@ int main(void) {
     struct sockaddr_in client_addr;
     socklen_t client_len;
 
-    if (load_valid_keys_binary("valid_keys.bin") < 0) {
-        fprintf(stderr, "[BACKEND] Failed to load valid keys\n");
+    srand((unsigned int)time(NULL));
+
+    //--------------LOADS DATA -------------------//
+
+    if (load_valid_keys_binary("public_auth_keys.bin") < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load valid voter keys\n");
         return 1;
     }
 
@@ -294,13 +281,19 @@ int main(void) {
         return 1;
     }
 
+    if (load_public_key_list_bin("public_ballot_keys.bin", &voter_public_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load public key list\n");
+        return 1;
+    }
+
+    if (load_private_key_list_bin("ballot_priv_keys.bin", &ballot_private_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load ballot private key list\n");
+        return 1;
+    }
+
+
     init_used_keys();
 
-    printf("[BACKEND] Loaded %d valid keys\n", valid_key_count);
-    print_valid_keys();
-
-    printf("[BACKEND] Loaded %d ballot options\n", ballot_option_count);
-    print_ballot();
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -335,14 +328,12 @@ int main(void) {
 
     while (1) {
         client_len = sizeof(client_addr);
-
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
             perror("accept");
             continue;
         }
 
-        printf("[BACKEND] Client connected\n");
         handle_client(client_fd);
     }
 
