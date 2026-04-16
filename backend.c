@@ -76,7 +76,7 @@ static void build_tally(char *buf, size_t len)
 {
     snprintf(buf, len,
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
-    }
+}
 
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
     snprintf(out, out_len, "%u", voter_id);
