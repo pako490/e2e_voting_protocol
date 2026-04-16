@@ -53,6 +53,10 @@ static const RSAPrivateKey *get_ballot_private_key(void) {
     return &ballot_private_keys.keys[0];
 }
 
+static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
+    snprintf(out, out_len, "%u", voter_id);
+}
+
 static void process_message(ClientSession *session,
                             const ClientMessage *incoming,
                             ServerMessage *outgoing) {
@@ -80,6 +84,16 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            char used_key_buf_auth[32];
+            voter_id_to_key_string(session->voter_id, used_key_buf_auth, sizeof(used_key_buf_auth));
+
+            if (is_used_key(used_key_buf_auth)) {
+                set_error(outgoing, "Voter has already voted.");
+                session->state = STATE_DONE;
+                return;
+            }
+        
+
             session->auth_challenge =
                 (uint64_t)(rand() % 10000 + 1000);
 
@@ -96,6 +110,7 @@ static void process_message(ClientSession *session,
             return;
 
         case STATE_AUTH:
+
             if (incoming->type != MSG_CHALLENGE_RESPONSE) {
                 set_error(outgoing, "Expected challenge response.");
                 return;
@@ -159,6 +174,15 @@ static void process_message(ClientSession *session,
 
             session->selected_choice = (uint32_t)decrypted_vote;
             session->receipt_id = next_receipt_id();
+
+            char used_key_buf_ballot[32];
+            voter_id_to_key_string(session->voter_id, used_key_buf_ballot, sizeof(used_key_buf_ballot));
+
+            if (append_used_key(used_key_buf_ballot) < 0) {
+                set_error(outgoing, "Failed to record used voter.");
+                session->state = STATE_DONE;
+                return;
+            }
 
             if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
                 set_error(outgoing, "Failed to create code card value.");
@@ -245,6 +269,8 @@ int main(void) {
 
     srand((unsigned int)time(NULL));
 
+    //--------------LOADS DATA -------------------//
+
     if (load_valid_keys_binary("public_auth_keys.bin") < 0) {
         fprintf(stderr, "[BACKEND] Failed to load valid voter keys\n");
         return 1;
@@ -264,6 +290,10 @@ int main(void) {
         fprintf(stderr, "[BACKEND] Failed to load ballot private key list\n");
         return 1;
     }
+
+
+    init_used_keys();
+
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
