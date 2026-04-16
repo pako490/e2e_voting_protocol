@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
+#include "comm.h"
 #include "protocol.h"
 #include "storage.h"
 
@@ -73,6 +74,13 @@ static void print_session_hits(const ClientSession *session) {
            session->hit_done);
 }
 
+static void set_error_response(ServerMessage *outgoing, const char *message) {
+    memset(outgoing, 0, sizeof(*outgoing));
+    outgoing->type = MSG_ERROR;
+    outgoing->status = STATUS_NO;
+    snprintf(outgoing->text, sizeof(outgoing->text), "%s", message);
+}
+
 static void process_message(ClientSession *session,
                             const ClientMessage *incoming,
                             ServerMessage *outgoing) {
@@ -91,28 +99,19 @@ static void process_message(ClientSession *session,
             session->hit_login++;
 
             if (incoming->type != MSG_LOGIN) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Expected login first.");
+                set_error_response(outgoing, "Expected login first.");
                 printf("[BACKEND] LOGIN rejected: wrong message type\n");
                 break;
             }
 
             if (!is_valid_key(incoming->text)) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Invalid key.");
+                set_error_response(outgoing, "Invalid key.");
                 printf("[BACKEND] LOGIN rejected: invalid key=%s\n", incoming->text);
                 break;
             }
 
             if (is_used_key(incoming->text)) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Key already used.");
+                set_error_response(outgoing, "Key already used.");
                 printf("[BACKEND] LOGIN rejected: used key=%s\n", incoming->text);
                 break;
             }
@@ -129,11 +128,9 @@ static void process_message(ClientSession *session,
 
             outgoing->type = MSG_BALLOT_DATA;
             outgoing->status = STATUS_YES;
+
             if (build_ballot_text(outgoing->text, sizeof(outgoing->text)) < 0) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Failed to build ballot.");
+                set_error_response(outgoing, "Failed to build ballot.");
                 printf("[BACKEND] Failed to build ballot text\n");
             }
             break;
@@ -142,19 +139,13 @@ static void process_message(ClientSession *session,
             session->hit_ballot++;
 
             if (incoming->type != MSG_VOTE) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Expected ballot submission.");
+                set_error_response(outgoing, "Expected ballot submission.");
                 printf("[BACKEND] BALLOT rejected: wrong message type\n");
                 break;
             }
 
             if (!session->authenticated) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Not authenticated.");
+                set_error_response(outgoing, "Not authenticated.");
                 printf("[BACKEND] BALLOT rejected: session not authenticated\n");
                 break;
             }
@@ -162,10 +153,7 @@ static void process_message(ClientSession *session,
             printf("[BACKEND] Received ballot choice=%u\n", incoming->choice_id);
 
             if (!is_valid_ballot_choice(incoming->choice_id)) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Invalid ballot choice.");
+                set_error_response(outgoing, "Invalid ballot choice.");
                 printf("[BACKEND] BALLOT rejected: invalid choice=%u\n", incoming->choice_id);
                 break;
             }
@@ -173,10 +161,7 @@ static void process_message(ClientSession *session,
             session->selected_choice = incoming->choice_id;
 
             if (append_used_key(session->voter_key) < 0) {
-                outgoing->type = MSG_ERROR;
-                outgoing->status = STATUS_NO;
-                snprintf(outgoing->text, sizeof(outgoing->text),
-                         "Failed to record used key.");
+                set_error_response(outgoing, "Failed to record used key.");
                 printf("[BACKEND] BALLOT failed: could not append used key=%s\n",
                        session->voter_key);
                 break;
@@ -212,16 +197,12 @@ static void process_message(ClientSession *session,
 
             outgoing->type = MSG_STATUS;
             outgoing->status = STATUS_YES;
-            snprintf(outgoing->text, sizeof(outgoing->text),
-                     "Session complete.");
+            snprintf(outgoing->text, sizeof(outgoing->text), "Session complete.");
             break;
 
         case STATE_DONE:
             session->hit_done++;
-            outgoing->type = MSG_ERROR;
-            outgoing->status = STATUS_NO;
-            snprintf(outgoing->text, sizeof(outgoing->text),
-                     "Connection closed.");
+            set_error_response(outgoing, "Connection closed.");
             printf("[BACKEND] DONE state reached\n");
             break;
     }
@@ -231,6 +212,7 @@ static void handle_client(int client_fd) {
     ClientSession session;
     ClientMessage incoming;
     ServerMessage outgoing;
+    uint32_t received_size = 0;
 
     memset(&session, 0, sizeof(session));
     session.state = STATE_LOGIN;
@@ -241,19 +223,19 @@ static void handle_client(int client_fd) {
     while (session.state != STATE_DONE) {
         memset(&incoming, 0, sizeof(incoming));
         memset(&outgoing, 0, sizeof(outgoing));
+        received_size = 0;
 
-        ssize_t bytes_received = recv(client_fd, &incoming, sizeof(incoming), 0);
-        if (bytes_received < 0) {
-            perror("recv");
+        if (recv_message(client_fd, &incoming, sizeof(incoming), &received_size) < 0) {
+            perror("recv_message");
             break;
         }
 
-        if (bytes_received == 0) {
-            printf("[BACKEND] Client disconnected\n");
+        if (received_size != sizeof(incoming)) {
+            fprintf(stderr, "[BACKEND] Unexpected message size: %u bytes\n", received_size);
             break;
         }
 
-        printf("[BACKEND] Received %zd bytes\n", bytes_received);
+        printf("[BACKEND] Received %u bytes\n", received_size);
         printf("[BACKEND] Incoming payload: type=%s (%u), status=%s (%u), choice_id=%u, text=\"%s\"\n",
                msg_type_name(incoming.type),
                incoming.type,
@@ -264,8 +246,8 @@ static void handle_client(int client_fd) {
 
         process_message(&session, &incoming, &outgoing);
 
-        if (send(client_fd, &outgoing, sizeof(outgoing), 0) < 0) {
-            perror("send");
+        if (send_message(client_fd, &outgoing, sizeof(outgoing)) < 0) {
+            perror("send_message");
             break;
         }
 
@@ -295,8 +277,11 @@ static void handle_client(int client_fd) {
 }
 
 int main(void) {
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr, client_addr;
+    int server_fd;
+    int client_fd;
+    int opt = 1;
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
     socklen_t client_len;
 
     if (load_valid_keys_binary("valid_keys.bin") < 0) {
@@ -323,7 +308,6 @@ int main(void) {
         return 1;
     }
 
-    int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt");
         close(server_fd);

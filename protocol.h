@@ -7,6 +7,7 @@
 #define SERVER_ADDR "127.0.0.1"
 
 #define MESSAGE_TEXT_LEN 256
+#define KEY_LEN 64
 
 typedef enum {
     MSG_NONE = 0,
@@ -25,17 +26,17 @@ typedef enum {
 } MessageStatus;
 
 typedef struct {
-    uint32_t type;        // MessageType
-    uint32_t status;      // optional, usually STATUS_NONE for client requests
-    uint32_t choice_id;   // used for ballot submission
-    char text[MESSAGE_TEXT_LEN]; // key, message text, fallback input
+    uint32_t type;         
+    uint32_t status;       
+    uint32_t choice_id;    
+    char text[MESSAGE_TEXT_LEN]; 
 } ClientMessage;
 
 typedef struct {
-    uint32_t type;        // MessageType
-    uint32_t status;      // STATUS_YES / STATUS_NO / STATUS_NONE
-    uint32_t receipt_id;  // used for MSG_RECEIPT
-    char text[MESSAGE_TEXT_LEN]; // ballot text, error text, receipt text
+    uint32_t type;        
+    uint32_t status;      
+    uint32_t receipt_id;  
+    char text[MESSAGE_TEXT_LEN]; 
 } ServerMessage;
 
 #endif
