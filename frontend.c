@@ -86,9 +86,14 @@ int main(void) {
         return 1;
     }
 
+    if (incoming.type == MSG_RECEIPT && incoming.status == STATUS_NO) {
+        printf("[FRONTEND] You have already voted.\n");
+        printf("%s\n", incoming.payload);
+        return 0;
+    }
+
     if (incoming.type != MSG_CHALLENGE) {
-        fprintf(stderr, "[FRONTEND] Expected challenge, got type=%u\n", incoming.type);
-        close(sock_fd);
+        printf("[FRONTEND] Expected challenge, got type=%d\n", incoming.type);
         return 1;
     }
 

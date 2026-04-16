@@ -110,7 +110,10 @@ static void process_message(ClientSession *session,
     memset(outgoing, 0, sizeof(*outgoing));
 
     switch (session->state) {
-        case STATE_HELLO:
+        case STATE_HELLO: {
+            char used_key_buf_auth[32];
+            StoredReceipt stored;
+
             if (incoming->type != MSG_HELLO) {
                 set_error(outgoing, "Expected hello message.");
                 return;
@@ -125,18 +128,32 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            char used_key_buf_auth[32];
-            voter_id_to_key_string(session->voter_id, used_key_buf_auth, sizeof(used_key_buf_auth));
+            voter_id_to_key_string(session->voter_id,
+                                   used_key_buf_auth,
+                                   sizeof(used_key_buf_auth));
 
             if (is_used_key(used_key_buf_auth)) {
-                set_error(outgoing, "Voter has already voted.");
+                if (find_receipt_by_voter_id(session->voter_id, &stored) == 0) {
+                    if (format_receipt_text(outgoing->payload,
+                                            sizeof(outgoing->payload),
+                                            stored.receipt_id,
+                                            &stored.receipt) < 0) {
+                        set_error(outgoing, "Voter has already voted, but receipt formatting failed.");
+                        session->state = STATE_DONE;
+                        return;
+                    }
+
+                    outgoing->type = MSG_RECEIPT;
+                    outgoing->status = STATUS_NO;
+                } else {
+                    set_error(outgoing, "Voter has already voted, but no receipt was found.");
+                }
+
                 session->state = STATE_DONE;
                 return;
             }
-        
 
-            session->auth_challenge =
-                (uint64_t)(rand() % 10000 + 1000);
+            session->auth_challenge = (uint64_t)(rand() % 10000 + 1000);
 
             outgoing->type = MSG_CHALLENGE;
             outgoing->status = STATUS_YES;
@@ -149,6 +166,7 @@ static void process_message(ClientSession *session,
 
             session->state = STATE_AUTH;
             return;
+        }
 
         case STATE_AUTH:
 

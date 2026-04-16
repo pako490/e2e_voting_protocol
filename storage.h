@@ -60,5 +60,6 @@ void print_ballot(void);
 /* Receipt handling */
 uint32_t next_receipt_id(void);
 int append_receipt(const StoredReceipt *record);
+int find_receipt_by_voter_id(uint32_t voter_id, StoredReceipt *out);
 
 #endif

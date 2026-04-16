@@ -210,3 +210,20 @@ int append_receipt(const StoredReceipt *r) {
 
     return (written == 1) ? 0 : -1;
 }
+
+int find_receipt_by_voter_id(uint32_t voter_id, StoredReceipt *out) {
+    FILE *fp = fopen("receipts.bin", "rb");
+    if (!fp) return -1;
+
+    StoredReceipt temp;
+    while (fread(&temp, sizeof(StoredReceipt), 1, fp) == 1) {
+        if (temp.voter_id == voter_id) {
+            *out = temp;
+            fclose(fp);
+            return 0;
+        }
+    }
+
+    fclose(fp);
+    return -1;
+}
