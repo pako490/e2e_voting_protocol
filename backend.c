@@ -76,6 +76,8 @@ static void build_tally(char *buf, size_t len)
 {
     snprintf(buf, len,
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
+    }
+
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
     snprintf(out, out_len, "%u", voter_id);
 }
@@ -290,6 +292,16 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
+            if (auth_pub == NULL) {
+                set_error(outgoing, "Auth public key missing for receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            encrypted_receipt_value =
+                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+
             cipher_len = snprintf((char *)ciphertext_buf,
                                   sizeof(ciphertext_buf),
                                   "vote:%u",
@@ -319,9 +331,9 @@ static void process_message(ClientSession *session,
             }
 
             if (format_receipt_text(outgoing->payload,
-                        sizeof(outgoing->payload),
-                        session->receipt_id,
-                        &session->receipt) < 0) {
+                                    sizeof(outgoing->payload),
+                                    session->receipt_id,
+                                    &session->receipt) < 0) {
                 set_error(outgoing, "Failed to format receipt.");
                 session->state = STATE_DONE;
                 return;
@@ -334,8 +346,6 @@ static void process_message(ClientSession *session,
             outgoing->choice_id = session->selected_choice;
             outgoing->value = encrypted_receipt_value;
             outgoing->modulus_n = auth_pub->n;
-            snprintf(outgoing->payload, sizeof(outgoing->payload),
-                     "Decrypt the receipt value and check your code card.");
 
             session->state = STATE_DONE;
             return;

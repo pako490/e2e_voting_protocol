@@ -197,8 +197,9 @@ int main(void) {
         return 1;
     }
 
-    printf("\n[FRONTEND] Receipt:\n%s\n", incoming.payload);
-
+    printf("[FRONTEND] Receipt ID: %u\n", incoming.receipt_id);
+    printf("[FRONTEND] %s\n", incoming.payload);
+        
     close(sock_fd);
     return 0;
 }
