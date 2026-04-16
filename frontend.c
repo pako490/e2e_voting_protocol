@@ -55,7 +55,7 @@ int main(void) {
 
     printf("[FRONTEND] Connected to backend\n");
 
-    printf("Enter voter ID: ");
+    printf("Enter voter ID (0 for Vote Tally): ");
     if (scanf("%u", &voter_id) != 1) {
         fprintf(stderr, "Invalid voter ID\n");
         close(sock_fd);
@@ -85,6 +85,13 @@ int main(void) {
         close(sock_fd);
         return 1;
     }
+
+    if (incoming.type == MSG_STATUS) {
+        //call tally
+        printf("\n[FRONTEND] Vote Tally: \n%s\n", incoming.payload);
+        close(sock_fd);
+        return 0;
+    } 
 
     if (incoming.type != MSG_CHALLENGE) {
         fprintf(stderr, "[FRONTEND] Expected challenge, got type=%u\n", incoming.type);

