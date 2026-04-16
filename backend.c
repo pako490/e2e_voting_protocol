@@ -28,6 +28,7 @@ typedef struct {
     uint32_t auth_key_id;
     uint64_t auth_challenge;
     uint32_t selected_choice;
+    uint32_t receipt_id;
     CodeCard code_card;
     VoteReceipt receipt;
 } ClientSession;
@@ -75,10 +76,13 @@ static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len)
 }
 
 static int format_receipt_text(char *buffer, size_t buffer_size,
+                               uint32_t receipt_id,
                                const VoteReceipt *receipt) {
     int written = 0;
 
-    int n = snprintf(buffer + written, buffer_size - written, "Vote Receipt\n");
+    int n = snprintf(buffer + written, buffer_size - written,
+                     "Vote Receipt\nReceipt ID: %u\n",
+                     receipt_id);
     if (n < 0 || (size_t)n >= buffer_size - written) return -1;
     written += n;
 
@@ -196,7 +200,12 @@ static void process_message(ClientSession *session,
             session->state = STATE_BALLOT;
             return;
 
-        case STATE_BALLOT:
+        case STATE_BALLOT: {
+            unsigned char ciphertext_buf[64];
+            int cipher_len;
+            char used_key_buf_ballot[32];
+            StoredReceipt stored;
+
             if (incoming->type != MSG_VOTE) {
                 set_error(outgoing, "Expected vote message.");
                 return;
@@ -219,9 +228,11 @@ static void process_message(ClientSession *session,
             }
 
             session->selected_choice = (uint32_t)decrypted_vote;
+            session->receipt_id = next_receipt_id();
 
-            char used_key_buf_ballot[32];
-            voter_id_to_key_string(session->voter_id, used_key_buf_ballot, sizeof(used_key_buf_ballot));
+            voter_id_to_key_string(session->voter_id,
+                                   used_key_buf_ballot,
+                                   sizeof(used_key_buf_ballot));
 
             if (append_used_key(used_key_buf_ballot) < 0) {
                 set_error(outgoing, "Failed to record used voter.");
@@ -235,29 +246,38 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            {
-                unsigned char ciphertext_buf[64];
-                int cipher_len = snprintf((char *)ciphertext_buf,
-                                        sizeof(ciphertext_buf),
-                                        "vote:%u",
-                                        session->selected_choice);
+            cipher_len = snprintf((char *)ciphertext_buf,
+                                  sizeof(ciphertext_buf),
+                                  "vote:%u",
+                                  session->selected_choice);
 
-                if (cipher_len < 0 || (size_t)cipher_len >= sizeof(ciphertext_buf)) {
-                    set_error(outgoing, "Failed to build ciphertext buffer.");
-                    session->state = STATE_DONE;
-                    return;
-                }
+            if (cipher_len < 0 || (size_t)cipher_len >= sizeof(ciphertext_buf)) {
+                set_error(outgoing, "Failed to build ciphertext buffer.");
+                session->state = STATE_DONE;
+                return;
+            }
 
-                generate_receipt(&session->code_card,
-                                session->selected_choice,
-                                ciphertext_buf,
-                                (size_t)cipher_len,
-                                &session->receipt);
+            generate_receipt(&session->code_card,
+                             session->selected_choice,
+                             ciphertext_buf,
+                             (size_t)cipher_len,
+                             &session->receipt);
+
+            stored.receipt_id = session->receipt_id;
+            stored.voter_id   = session->voter_id;
+            stored.choice_id  = session->selected_choice;
+            stored.receipt    = session->receipt;
+
+            if (append_receipt(&stored) < 0) {
+                set_error(outgoing, "Failed to store receipt.");
+                session->state = STATE_DONE;
+                return;
             }
 
             if (format_receipt_text(outgoing->payload,
-                                    sizeof(outgoing->payload),
-                                    &session->receipt) < 0) {
+                        sizeof(outgoing->payload),
+                        session->receipt_id,
+                        &session->receipt) < 0) {
                 set_error(outgoing, "Failed to format receipt.");
                 session->state = STATE_DONE;
                 return;
@@ -269,6 +289,7 @@ static void process_message(ClientSession *session,
 
             session->state = STATE_DONE;
             return;
+        }
 
         case STATE_DONE:
         default:
