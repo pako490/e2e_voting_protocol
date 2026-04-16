@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define NUM_CANDIDATES 4
-#define CODE_LENGTH 4
+#define CODE_LENGTH 5
 #define SEED_LENGTH 32
 
 typedef struct {
