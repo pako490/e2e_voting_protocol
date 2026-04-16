@@ -214,9 +214,9 @@ static void process_message(ClientSession *session,
 
                 if (cipher_len < 0 || (size_t)cipher_len >= sizeof(ciphertext_buf)) {
                     set_error(outgoing, "Failed to build ciphertext buffer.");
-                session->state = STATE_DONE;
-                return;
-            }
+                    session->state = STATE_DONE;
+                    return;
+                }
 
                 generate_receipt(&session->code_card,
                                 session->selected_choice,
