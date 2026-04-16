@@ -38,7 +38,7 @@ int main(void) {
 
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
-        perror("socket");
+        perror("[FRONTEND] socket");
         return 1;
     }
 
@@ -48,7 +48,7 @@ int main(void) {
     server_addr.sin_addr.s_addr = inet_addr(SERVER_ADDR);
 
     if (connect(sock_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("connect");
+        perror("[FRONTEND] connect");
         close(sock_fd);
         return 1;
     }
