@@ -271,15 +271,42 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
-            if (auth_pub == NULL) {
-                set_error(outgoing, "Auth public key missing for receipt.");
+            cipher_len = snprintf((char *)ciphertext_buf,
+                                  sizeof(ciphertext_buf),
+                                  "vote:%u",
+                                  session->selected_choice);
+
+            if (cipher_len < 0 || (size_t)cipher_len >= sizeof(ciphertext_buf)) {
+                set_error(outgoing, "Failed to build ciphertext buffer.");
                 session->state = STATE_DONE;
                 return;
             }
 
-            encrypted_receipt_value =
-                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+            generate_receipt(&session->code_card,
+                             session->selected_choice,
+                             ciphertext_buf,
+                             (size_t)cipher_len,
+                             &session->receipt);
+
+            stored.receipt_id = session->receipt_id;
+            stored.voter_id   = session->voter_id;
+            stored.choice_id  = session->selected_choice;
+            stored.receipt    = session->receipt;
+
+            if (append_receipt(&stored) < 0) {
+                set_error(outgoing, "Failed to store receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            if (format_receipt_text(outgoing->payload,
+                        sizeof(outgoing->payload),
+                        session->receipt_id,
+                        &session->receipt) < 0) {
+                set_error(outgoing, "Failed to format receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
@@ -293,6 +320,7 @@ static void process_message(ClientSession *session,
 
             session->state = STATE_DONE;
             return;
+        }
 
         case STATE_DONE:
         default:
@@ -350,6 +378,8 @@ int main(void) {
 
     srand((unsigned int)time(NULL));
 
+    //--------------LOADS DATA -------------------//
+
     if (load_valid_keys_binary("public_auth_keys.bin") < 0) {
         fprintf(stderr, "[BACKEND] Failed to load valid voter keys\n");
         return 1;
@@ -369,6 +399,10 @@ int main(void) {
         fprintf(stderr, "[BACKEND] Failed to load ballot private key list\n");
         return 1;
     }
+
+
+    init_used_keys();
+
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
