@@ -1,46 +1,56 @@
-#include "codecard.h"
+#include "receipt.h"
 #include <stdio.h>
 #include <string.h>
-#include <openssl/rand.h>
+#include "codecard.h"
 
 static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-static void random_code(char out[CODE_LENGTH]) {
-    unsigned char b;
-    for (int i = 0; i < CODE_LENGTH - 1; i++) {
-        RAND_bytes(&b, 1);
-        out[i] = ALPHABET[b % (sizeof(ALPHABET) - 1)];
+// ciphertext hash used to bind receipt to encrypted vote
+void simple_hash(const unsigned char *data, size_t len, unsigned char out[HASH_LEN]) {
+    for (int i = 0; i < HASH_LEN; i++) out[i] = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        out[i % HASH_LEN] ^= data[i];
+        out[(i * 7) % HASH_LEN] += data[i];
     }
-    out[CODE_LENGTH - 1] = '\0';
 }
 
-void init_code_card(CodeCard *card) {
-    memset(card, 0, sizeof(*card));
-
-    for (int i = 0; i < NUM_CANDIDATES; i++) {
-        card->entries[i].candidate_id = i + 1;
-        random_code(card->entries[i].vote_code);
+void derive_fake_code(const unsigned char *seed, int candidate_id,
+                      const unsigned char *hash, char *out) {
+    for (int i = 0; i < 4; i++) {
+        unsigned char v = seed[i] ^ hash[i] ^ candidate_id;
+        out[i] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[v % 32];
     }
-
-    random_code(card->confirm_code);
-    RAND_bytes(card->receipt_seed, SEED_LENGTH);
+    out[4] = '\0';
 }
 
-int find_candidate_by_code(const CodeCard *card, const char *code) {
+void generate_receipt(const CodeCard *card,
+                      uint32_t  selected_candidate_id,
+                      const unsigned char *ciphertext,
+                      size_t ciphertext_len,
+                      VoteReceipt *receipt) {
+    memset(receipt, 0, sizeof(*receipt));
+    simple_hash(ciphertext, ciphertext_len, receipt->ciphertext_hash);
+
     for (int i = 0; i < NUM_CANDIDATES; i++) {
-        if (strcmp(card->entries[i].vote_code, code) == 0) {
-            return (int)card->entries[i].candidate_id;
+        receipt->entries[i].candidate_id = card->entries[i].candidate_id;
+
+        if ((int)card->entries[i].candidate_id == selected_candidate_id) {
+            strcpy(receipt->entries[i].verification_code, card->confirm_code);
+        } else {
+            derive_fake_code(card->receipt_seed,
+                             card->entries[i].candidate_id,
+                             receipt->ciphertext_hash,
+                             receipt->entries[i].verification_code);
         }
     }
-    return -1;
 }
 
-void print_code_card(const CodeCard *card) {
-    printf("Code Card\n");
+void print_receipt(const VoteReceipt *receipt) {
+    printf("Vote Receipt\n");
     for (int i = 0; i < NUM_CANDIDATES; i++) {
         printf("%u -> %s\n",
-               card->entries[i].candidate_id,
-               card->entries[i].vote_code);
+               receipt->entries[i].candidate_id,
+               receipt->entries[i].verification_code);
     }
-    printf("Confirmation Code -> %s\n", card->confirm_code);
 }

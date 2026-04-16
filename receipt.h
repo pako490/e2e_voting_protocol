@@ -4,8 +4,8 @@
 #include "codecard.h"
 #include <stddef.h>
 #include <stdint.h>
-// ciphertext used to bind receipt to encrypted vote
-#include <openssl/sha.h>
+
+#define HASH_LEN 32
 
 typedef struct {
     uint32_t candidate_id;
@@ -14,7 +14,7 @@ typedef struct {
 
 typedef struct {
     ReceiptEntry entries[NUM_CANDIDATES];
-    unsigned char ciphertext_hash[SHA256_DIGEST_LENGTH];
+    unsigned char ciphertext_hash[HASH_LEN];
 } VoteReceipt;
 
 void generate_receipt(const CodeCard* card, uint32_t selected_candidate_id, const unsigned char *ciphertext, size_t ciphertext_len, VoteReceipt *receipt);
