@@ -9,6 +9,9 @@
 #define MESSAGE_PAYLOAD_LEN 256
 #define KEY_FILE_MAX 128
 
+// 2048-bit RSA
+#define RSA_MAX_BYTES 256
+
 typedef enum {
     MSG_NONE = 0,
     MSG_HELLO = 1,
@@ -34,9 +37,16 @@ typedef struct {
     uint32_t key_id;
     uint32_t choice_id;
 
-    uint64_t value;
-    uint64_t modulus_n;
-    uint64_t exponent_e;
+    // RSA Val.
+    uint8_t value[RSA_MAX_BYTES];
+    uint32_t value_len;
+
+    // Key
+    uint8_t modulus_n[RSA_MAX_BYTES];
+    uint32_t n_len;
+
+    uint8_t exponent_e[RSA_MAX_BYTES];
+    uint32_t e_len;
 
     char payload[MESSAGE_PAYLOAD_LEN];
 } ClientMessage;
@@ -48,9 +58,15 @@ typedef struct {
     uint32_t receipt_id;
     uint32_t choice_id;
 
-    uint64_t value;
-    uint64_t modulus_n;
-    uint64_t exponent_e;
+    // Key
+    uint8_t value[RSA_MAX_BYTES];
+    uint32_t value_len;
+
+    uint8_t modulus_n[RSA_MAX_BYTES];
+    uint32_t n_len;
+
+    uint8_t exponent_e[RSA_MAX_BYTES];
+    uint32_t e_len;
 
     char payload[MESSAGE_PAYLOAD_LEN];
 } ServerMessage;

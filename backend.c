@@ -11,8 +11,27 @@
 #include "comm.h"
 #include "storage.h"
 #include "keyloader.h"
-#include "rsa.h" //saving the best for last
+#include "rsa_openssl.h" //saving the best for last
 #include "codecard.h"
+
+#define RSA_MAX_BYTES 256
+// RSA Helpers
+// uint64 → big-endian bytes
+static void u64_to_bytes(uint64_t val, uint8_t *out, size_t *len) {
+    *len = 8;
+    for (int i = 0; i < 8; i++) {
+        out[7 - i] = (val >> (i * 8)) & 0xFF;
+    }
+}
+
+// big-endian bytes → uint64
+static uint64_t bytes_to_u64(const uint8_t *in, size_t len) {
+    uint64_t val = 0;
+    for (size_t i = 0; i < len; i++) {
+        val = (val << 8) | in[i];
+    }
+    return val;
+}
 
 typedef enum {
     STATE_HELLO,
@@ -100,9 +119,44 @@ static void process_message(ClientSession *session,
             outgoing->type = MSG_CHALLENGE;
             outgoing->status = STATUS_YES;
             outgoing->key_id = auth_pub->key_id;
-            outgoing->value =
-                rsa_encrypt_uint64(session->auth_challenge, auth_pub->e, auth_pub->n);
-            outgoing->modulus_n = auth_pub->n;
+
+            // BIGNUM *m = BN_new();
+            // BIGNUM *c = BN_new();
+            // BN_set_word(m, session->auth_challenge);
+
+            // c = rsa_encrypt_bn(m, auth_pub, rsa_ctx);
+
+            // outgoing->value = BN_get_word(c);
+            // outgoing->modulus_n = auth_pub->n;
+
+            uint8_t plaintext[8];
+            size_t plaintext_len;
+
+            uint8_t ciphertext[RSA_MAX_BYTES];
+            size_t ciphertext_len;
+
+            // Convert challenge to bytes
+            u64_to_bytes(session->auth_challenge, plaintext, &plaintext_len);
+
+            // Encryption
+            rsa_encrypt_bytes(
+                plaintext, plaintext_len,
+                auth_pub->n_bytes, auth_pub->n_len,
+                auth_pub->e_bytes, auth_pub->e_len,
+                ciphertext, &ciphertext_len
+            );
+
+            // Store in message
+            memcpy(outgoing->valu, ciphertext, ciphertext_len);
+            outgoing->value_len = ciphertext_len;
+
+            // Copy Public key
+            memcpy(outgoing->modulus_n, auth_pub->n_bytes, auth_pub->n_len);
+            outgoing->n_len = auth_pub->n_len;
+
+            memcpy(outgoing->exponent_e, auth_pub->e_bytes, auth_pub->e_len);
+            outgoing->e_len = auth_pub->e_len;
+
             snprintf(outgoing->payload, sizeof(outgoing->payload),
                      "Decrypt the challenge with your private key.");
 
@@ -116,7 +170,9 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            if (incoming->value != session->auth_challenge) {
+            uint64_t response = bytes_to_u64(incoming->value, incoming->value_len);
+        
+            if (response->value != session->auth_challenge) {
                 set_error(outgoing, "Authentication failed.");
                 session->state = STATE_DONE;
                 return;
@@ -138,14 +194,20 @@ static void process_message(ClientSession *session,
             outgoing->type = MSG_BALLOT_DATA;
             outgoing->status = STATUS_YES;
             outgoing->key_id = ballot_priv->key_id;
-            outgoing->modulus_n = ballot_priv->n;
+            // outgoing->modulus_n = ballot_priv->n;
 
             /*
                 In this demo, we reuse key_id 1 in the private list and derive the
                 public exponent from your generated data convention.
                 For the cleanest setup, also load a ballot public key list and use e from there.
             */
-            outgoing->exponent_e = 65537;
+            // outgoing->exponent_e = 65537;
+
+            memcpy(outgoing->modulus_n, ballot_priv->n_bytes, ballot_priv->n_len);
+            outgoing->n_len = ballot_priv->n_len;
+
+            memcpy(outgoing->exponent_e, ballot_priv->e_bytes, ballot_priv->e_len);
+            outgoing->e_len = ballot_priv->e_len;
 
             session->state = STATE_BALLOT;
             return;
@@ -163,8 +225,20 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            decrypted_vote =
-                rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
+            // decrypted_vote =
+            //     rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
+
+            uint8_t decrypted[RSA_MAX_BYTES];
+            size_t decrypted_len;
+
+            rsa_decrypted_bytes(
+                incoming->value, incoming->value_len,
+                ballet_priv->n_bytes, ballot_priv->n_len,
+                ballot_priv->d_bytes, ballot_priv->d_len,
+                decrypted, &decrypted_len
+            );
+
+            uint64_t decrypted_vote = bytes_to_u64(decrypted, decrypted_len);
 
             if (!is_valid_ballot_choice((uint32_t)decrypted_vote)) {
                 set_error(outgoing, "Invalid decrypted vote.");
@@ -197,8 +271,35 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            encrypted_receipt_value =
-                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+            // encrypted_receipt_value =
+            //     rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+
+            uint8_t receipt_bytes[8];
+            size_t receipt_len;
+
+            uint8_t encrypted[RSA_MAX_BYTES];
+            size_t encrypted_len;
+
+            // Convert receipt → bytes
+            u64_to_bytes(receipt_code_value, receipt_bytes, &receipt_len);
+
+            // Encrypt
+            rsa_encrypt_bytes(
+                receipt_bytes, receipt_len,
+                auth_pub->n_bytes, auth_pub->n_len,
+                auth_pub->e_bytes, auth_pub->e_len,
+                encrypted, &encrypted_len
+            );
+
+            // Store
+            memcpy(outgoing->value, encrypted, encrypted_len);
+            outgoing->value_len = encrypted_len;
+
+            memcpy(outgoing->modulus_n, auth_pub->n_bytes, auth_pub->n_len);
+            outgoing->n_len = auth_pub->n_len;
+
+            memcpy(outgoing->exponent_e, auth_pub->e_bytes, auth_pub->e_len);
+            outgoing->e_len = auth_pub->e_len;
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
@@ -338,5 +439,6 @@ int main(void) {
     }
 
     close(server_fd);
+
     return 0;
 }
