@@ -7,17 +7,27 @@
 
 #define MAX_KEYS 1000
 #define DEFAULT_KEY_COUNT 100
+#define RSA_MAX_BYTES 256
 
 typedef struct {
     uint32_t key_id;
-    uint64_t n;
-    uint64_t e;
+
+    uint8_t n_bytes[RSA_MAX_BYTES];
+    size_t n_len;
+
+    uint8_t e_bytes[RSA_MAX_BYTES];
+    size_t e_len;
+
 } RSAPublicKey;
 
 typedef struct {
     uint32_t key_id;
-    uint64_t n;
-    uint64_t d;
+
+    uint8_t n_bytes[RSA_MAX_BYTES];
+    size_t n_len;
+
+    uint8_t d_bytes[RSA_MAX_BYTES];
+    size_t d_len;
 } RSAPrivateKey;
 
 typedef struct {
@@ -140,12 +150,27 @@ static int generate_rsa_keypair(uint32_t key_id, RSAPublicKey *pub, RSAPrivateKe
     }
 
     pub->key_id = key_id;
-    pub->n = n;
-    pub->e = e;
-
     priv->key_id = key_id;
-    priv->n = n;
-    priv->d = d;
+    
+    // n → bytes
+    pub->n_len = 8;
+    priv->n_len = 8;
+    for (int i = 0; i < 8; i++) {
+        pub->n_bytes[7 - i] = (n >> (i * 8)) & 0xFF;
+        priv->n_bytes[7 - i] = (n >> (i * 8)) & 0xFF;
+    }
+
+    // e → bytes
+    pub->e_len = 8;
+    for (int i = 0; i < 8; i++) {
+        pub->e_bytes[7 - i] = (e >> (i * 8)) & 0xFF;
+    }
+
+    // d → bytes
+    priv->d_len = 8;
+    for (int i = 0; i < 8; i++) {
+        priv->d_bytes[7 - i] = (d >> (i * 8)) & 0xFF;
+    }
 
     return 0;
 }
@@ -183,12 +208,24 @@ static int save_public_keys_txt(const char *filename, const PublicKeyList *list)
     fprintf(fp, "count=%u\n", list->count);
     fprintf(fp, "key_id,n,e\n");
 
-    for (uint32_t i = 0; i < list->count; i++) {
-        fprintf(fp, "%u,%llu,%llu\n",
-                list->keys[i].key_id,
-                (unsigned long long)list->keys[i].n,
-                (unsigned long long)list->keys[i].e);
-    }
+    // for (uint32_t i = 0; i < list->count; i++) {
+    //     fprintf(fp, "%u,%llu,%llu\n",
+    //             list->keys[i].key_id,
+    //             (unsigned long long)list->keys[i].n,
+    //             (unsigned long long)list->keys[i].e);
+    // }
+
+    fprintf(fp, "%u,", list->keys[i].key_id);
+
+    for (size_t j = 0; j < list->keys[i].n_len; j++)
+        fprintf(fp, "%02X", list->keys[i].n_bytes[j]);
+
+    fprintf(fp, ",");
+
+    for (size_t j = 0; j < list->keys[i].e_len; j++)
+        fprintf(fp, "%02X", list->keys[i].e_bytes[j]);
+
+    fprintf(fp, "\n");
 
     fclose(fp);
     return 0;
