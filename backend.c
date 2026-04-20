@@ -147,7 +147,7 @@ static void process_message(ClientSession *session,
             );
 
             // Store in message
-            memcpy(outgoing->valu, ciphertext, ciphertext_len);
+            memcpy(outgoing->value, ciphertext, ciphertext_len);
             outgoing->value_len = ciphertext_len;
 
             // Copy Public key
@@ -172,7 +172,7 @@ static void process_message(ClientSession *session,
 
             uint64_t response = bytes_to_u64(incoming->value, incoming->value_len);
         
-            if (response->value != session->auth_challenge) {
+            if (response != session->auth_challenge) {
                 set_error(outgoing, "Authentication failed.");
                 session->state = STATE_DONE;
                 return;
@@ -231,9 +231,9 @@ static void process_message(ClientSession *session,
             uint8_t decrypted[RSA_MAX_BYTES];
             size_t decrypted_len;
 
-            rsa_decrypted_bytes(
+            rsa_decrypt_bytes(
                 incoming->value, incoming->value_len,
-                ballet_priv->n_bytes, ballot_priv->n_len,
+                ballot_priv->n_bytes, ballot_priv->n_len,
                 ballot_priv->d_bytes, ballot_priv->d_len,
                 decrypted, &decrypted_len
             );
@@ -306,8 +306,8 @@ static void process_message(ClientSession *session,
             outgoing->key_id = auth_pub->key_id;
             outgoing->receipt_id = session->receipt_id;
             outgoing->choice_id = session->selected_choice;
-            outgoing->value = encrypted_receipt_value;
-            outgoing->modulus_n = auth_pub->n;
+            // outgoing->value = encrypted_receipt_value;
+            // outgoing->modulus_n = auth_pub->n;
             snprintf(outgoing->payload, sizeof(outgoing->payload),
                      "Decrypt the receipt value and check your code card.");
 
