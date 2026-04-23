@@ -14,7 +14,6 @@
 #include "rsa_openssl.h" //saving the best for last
 #include "codecard.h"
 
-#define RSA_MAX_BYTES 256
 // RSA Helpers
 // uint64 → big-endian bytes
 static void u64_to_bytes(uint64_t val, uint8_t *out, size_t *len) {
