@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <inttypes.h>
 
 #include "protocol.h"
 #include "comm.h"
@@ -33,9 +34,17 @@ typedef struct {
     VoteReceipt receipt;
 } ClientSession;
 
+typedef struct {
+    uint64_t encrypted_vote;
+    uint32_t candidate_id;
+} BulletinEntry;
+
 static PublicKeyList voter_public_keys;
 static PrivateKeyList ballot_private_keys;
 static int vote_tally[4] = {0, 0, 0, 0};
+#define MAX_BULLETIN 1000
+static BulletinEntry bulletin_board[MAX_BULLETIN];
+static int bulletin_count = 0;
 
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
@@ -76,6 +85,36 @@ static void build_tally(char *buf, size_t len)
 {
     snprintf(buf, len,
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
+}
+
+static int bulletin_lookup(uint64_t encrypted_vote, char *buf, size_t len) {
+    for (int i = 0; i < bulletin_count; i++) {
+        if (bulletin_board[i].encrypted_vote == encrypted_vote) {
+            snprintf(buf, len, "Encrypted Vote: %" PRIu64 "\nCandidate: %u", encrypted_vote, bulletin_board[i].candidate_id);
+            return 0;
+        }
+    }
+
+    snprintf(buf, len, "Vote not found on bulletin board.");
+    return -1;
+}
+
+static void full_bulletin(char *buf, size_t len) {
+    int offset = 0;
+
+    if (bulletin_count == 0) {
+        snprintf(buf + offset, len - offset, "No votes recorded.\n");
+        return;
+    }
+
+    for (int i = 0; i < bulletin_count; i++) {
+        int vote = snprintf(buf + offset, len - offset, "%" PRIu64 " -> Candidate %u\n", bulletin_board[i].encrypted_vote, bulletin_board[i].candidate_id);
+
+        if (vote < 0 || vote >= (int)(len - offset)) {
+            break;
+        }
+        offset += vote;
+    }
 }
 
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
@@ -131,13 +170,34 @@ static void process_message(ClientSession *session,
             session->voter_id = incoming->voter_id;
             session->auth_key_id = incoming->voter_id;
 
+            // tally
             if (session->voter_id == 0) {
-                //tally
                 char buf[256];
                 build_tally(buf, sizeof(buf));
 
                 outgoing->type = MSG_STATUS;
                 outgoing->status = STATUS_YES;
+                snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
+
+                session->state = STATE_DONE;
+                return;
+            }
+
+            // bulletin board & lookup
+            if (session->voter_id == 9999) {
+                char buf[512];
+                outgoing->type = MSG_STATUS;
+
+                if (incoming->value == 0) {  // full bulletin
+                    full_bulletin(buf, sizeof(buf));
+                    outgoing->status = STATUS_YES;
+                } else {  // lookup
+                    if (bulletin_lookup(incoming->value, buf, sizeof(buf)) == 0) {
+                        outgoing->status = STATUS_YES;
+                    } else {
+                        outgoing->status = STATUS_NO;
+                    }
+                }
                 snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
 
                 session->state = STATE_DONE;
@@ -268,8 +328,8 @@ static void process_message(ClientSession *session,
             }
 
             session->selected_choice = (uint32_t)decrypted_vote;
-            
-            //store vote tallies 
+
+            // store vote tallies 
             if (session->selected_choice >= 1 && session->selected_choice <= 4) {
                 vote_tally[session->selected_choice - 1]++;
             }
@@ -284,6 +344,13 @@ static void process_message(ClientSession *session,
                 set_error(outgoing, "Failed to record used voter.");
                 session->state = STATE_DONE;
                 return;
+            }
+
+            // bulletin board once vote accepted
+            if (bulletin_count < MAX_BULLETIN) {
+                bulletin_board[bulletin_count].encrypted_vote = incoming;
+                bulletin_board[bulletin_count].candidate_id = session->selected_choice;
+                bulletin_count++;
             }
 
             if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
