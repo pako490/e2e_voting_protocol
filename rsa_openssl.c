@@ -1,48 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <openssl/bn.h>
 
-#define KEY_BITS 1024
-#define MAX_BYTES 256  // supports up to 2048-bit keys
+#include "rsa_openssl.h"
 
-#define RSA_MAX_BYTES 256
-
-typedef struct {
-    uint32_t key_id;
-
-    BIGNUM *n;
-    BIGNUM *e;
-
-    uint8_t n_bytes[RSA_MAX_BYTES];
-    size_t n_len;
-
-    uint8_t e_bytes[RSA_MAX_BYTES];
-    size_t e_len;
-} RSAPublicKey;
-
-typedef struct {
-    uint32_t key_id;
-
-    BIGNUM *n;
-    BIGNUM *d;
-
-    uint8_t n_bytes[RSA_MAX_BYTES];
-    size_t n_len;
-
-    uint8_t d_bytes[RSA_MAX_BYTES];
-    size_t d_len;
-
-    uint8_t e_bytes[RSA_MAX_BYTES]; // optional but useful
-    size_t e_len;
-} RSAPrivateKey;
-
-// Helpers
+/* ── Debug helpers ───────────────────────────────────────────────────────── */
 
 void print_hex(const unsigned char *buf, size_t len) {
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++)
         printf("%02X", buf[i]);
-    }
     printf("\n");
 }
 
@@ -51,184 +19,133 @@ void print_bn(const char *label, BIGNUM *bn) {
     printf("%s: %s\n", label, hex);
     OPENSSL_free(hex);
 }
-// Key gen
+
+/* ── Key generation ──────────────────────────────────────────────────────── */
+
 int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
-    BIGNUM *p = BN_new();
-    BIGNUM *q = BN_new();
-    BIGNUM *n = BN_new();
+    BIGNUM *p   = BN_new();
+    BIGNUM *q   = BN_new();
+    BIGNUM *n   = BN_new();
     BIGNUM *phi = BN_new();
-    BIGNUM *e = BN_new();
-    BIGNUM *d = BN_new();
-    BIGNUM *p1 = BN_new();
-    BIGNUM *q1 = BN_new();
+    BIGNUM *e   = BN_new();
+    BIGNUM *d   = BN_new();
+    BIGNUM *p1  = BN_new();
+    BIGNUM *q1  = BN_new();
+    int     ret = -1;
 
     if (!p || !q || !n || !phi || !e || !d || !p1 || !q1)
-        return -1;
+        goto cleanup;
 
-    // Generate primes
     BN_generate_prime_ex(p, KEY_BITS / 2, 0, NULL, NULL, NULL);
     BN_generate_prime_ex(q, KEY_BITS / 2, 0, NULL, NULL, NULL);
 
-    // n = p * q
     BN_mul(n, p, q, ctx);
 
-    // phi = (p-1)(q-1)
     BN_sub(p1, p, BN_value_one());
     BN_sub(q1, q, BN_value_one());
     BN_mul(phi, p1, q1, ctx);
 
-    // e = 65537
     BN_set_word(e, 65537);
-
-    // d = e^-1 mod phi
     BN_mod_inverse(d, e, phi, ctx);
 
+    /* Public key */
     pub->n = BN_dup(n);
     pub->e = BN_dup(e);
 
+    pub->n_len = (size_t)BN_num_bytes(pub->n);
+    BN_bn2bin(pub->n, pub->n_bytes);
+
+    pub->e_len = (size_t)BN_num_bytes(pub->e);
+    BN_bn2bin(pub->e, pub->e_bytes);
+
+    /* Private key */
     priv->n = BN_dup(n);
     priv->d = BN_dup(d);
 
-    BN_free(p);
-    BN_free(q);
-    BN_free(n);
-    BN_free(phi);
-    BN_free(e);
-    BN_free(d);
-    BN_free(p1);
-    BN_free(q1);
+    priv->n_len = (size_t)BN_num_bytes(priv->n);
+    BN_bn2bin(priv->n, priv->n_bytes);
 
-    return 0;
+    priv->d_len = (size_t)BN_num_bytes(priv->d);
+    BN_bn2bin(priv->d, priv->d_bytes);
+
+    /* Store e in private key too (handy for sending ballot public info) */
+    priv->e_len = (size_t)BN_num_bytes(e);
+    BN_bn2bin(e, priv->e_bytes);
+
+    ret = 0;
+
+cleanup:
+    BN_free(p);  BN_free(q);
+    BN_free(n);  BN_free(phi);
+    BN_free(e);  BN_free(d);
+    BN_free(p1); BN_free(q1);
+    return ret;
 }
 
-// RSA (BIGNUM)
-
-BIGNUM *rsa_encrypt_bn(BIGNUM *m, const RSAPublicKey *pub, BN_CTX *ctx) {
-    BIGNUM *c = BN_new();
-    BN_mod_exp(c, m, pub->e, pub->n, ctx);
-    return c;
-}
-
-BIGNUM *rsa_decrypt_bn(BIGNUM *c, const RSAPrivateKey *priv, BN_CTX *ctx) {
-    BIGNUM *m = BN_new();
-    BN_mod_exp(m, c, priv->d, priv->n, ctx);
-    return m;
-}
-
-// Byte-based API
-
-int rsa_encrypt_bytes(
-    const unsigned char *in, size_t in_len,
-    unsigned char *out, size_t *out_len,
-    const RSAPublicKey *pub,
-    BN_CTX *ctx
-) {
-    BIGNUM *m = BN_bin2bn(in, in_len, NULL);
-    if (!m) return -1;
-
-    BIGNUM *c = rsa_encrypt_bn(m, pub, ctx);
-    if (!c) {
-        BN_free(m);
-        return -1;
-    }
-
-    int key_bytes = BN_num_bytes(pub->n);
-
-    memset(out, 0, key_bytes);
-    BN_bn2bin(c, out + (key_bytes - BN_num_bytes(c)));
-
-    *out_len = key_bytes;
-
-    BN_free(m);
-    BN_free(c);
-
-    return 0;
-}
-
-int rsa_decrypt_bytes(
-    const unsigned char *in, size_t in_len,
-    unsigned char *out, size_t *out_len,
-    const RSAPrivateKey *priv,
-    BN_CTX *ctx
-) {
-    BIGNUM *c = BN_bin2bn(in, in_len, NULL);
-    if (!c) return -1;
-
-    BIGNUM *m = rsa_decrypt_bn(c, priv, ctx);
-    if (!m) {
-        BN_free(c);
-        return -1;
-    }
-
-    int len = BN_num_bytes(m);
-    BN_bn2bin(m, out);
-
-    *out_len = len;
-
-    BN_free(c);
-    BN_free(m);
-
-    return 0;
-}
-
-// Cleanup
 void rsa_free_keys(RSAPublicKey *pub, RSAPrivateKey *priv) {
-    BN_free(pub->n);
-    BN_free(pub->e);
-    BN_free(priv->n);
-    BN_free(priv->d);
+    if (pub)  { BN_free(pub->n);  BN_free(pub->e); }
+    if (priv) { BN_free(priv->n); BN_free(priv->d); }
 }
 
-// Main
-int main() {
-    BN_CTX *ctx = BN_CTX_new();
+/* ── Internal mod-exp helper ─────────────────────────────────────────────── *
+ *                                                                            *
+ *  result = base^exp mod mod_n                                               *
+ *  Output is zero-padded to mod_n_len bytes (big-endian).                   *
+ *                                                                            *
+ * ─────────────────────────────────────────────────────────────────────────  */
+static int mod_exp_bytes(
+    const uint8_t *base_bytes, size_t base_len,
+    const uint8_t *exp_bytes,  size_t exp_len,
+    const uint8_t *mod_bytes,  size_t mod_len,
+    uint8_t       *out,        size_t *out_len
+) {
+    BN_CTX *ctx  = BN_CTX_new();
+    BIGNUM *base = BN_bin2bn(base_bytes, (int)base_len, NULL);
+    BIGNUM *exp  = BN_bin2bn(exp_bytes,  (int)exp_len,  NULL);
+    BIGNUM *mod  = BN_bin2bn(mod_bytes,  (int)mod_len,  NULL);
+    BIGNUM *res  = BN_new();
+    int     ret  = -1;
 
-    RSAPublicKey pub;
-    RSAPrivateKey priv;
+    if (!ctx || !base || !exp || !mod || !res)
+        goto cleanup;
 
-    printf("Generating RSA keys...\n");
-    rsa_generate_keys(&pub, &priv, ctx);
+    if (!BN_mod_exp(res, base, exp, mod, ctx))
+        goto cleanup;
 
-    print_bn("Modulus n", pub.n);
-    print_bn("Public exponent e", pub.e);
-    print_bn("Private exponent d", priv.d);
+    /* Zero-pad the result to the same width as the modulus */
+    int key_bytes = BN_num_bytes(mod);
+    memset(out, 0, (size_t)key_bytes);
+    BN_bn2bin(res, out + (key_bytes - BN_num_bytes(res)));
+    *out_len = (size_t)key_bytes;
+    ret = 0;
 
-    // Test message
-    unsigned char message[] = {87}; // 'W'
-    size_t message_len = 1;
-
-    unsigned char ciphertext[MAX_BYTES];
-    size_t ciphertext_len;
-
-    unsigned char decrypted[MAX_BYTES];
-    size_t decrypted_len;
-
-    printf("\nOriginal message: %d\n", message[0]);
-
-    // Encrypt
-    rsa_encrypt_bytes(
-        message, message_len,
-        ciphertext, &ciphertext_len,
-        &pub,
-        ctx
-    );
-
-    printf("Ciphertext (%zu bytes):\n", ciphertext_len);
-    print_hex(ciphertext, ciphertext_len);
-
-    // Decrypt
-    rsa_decrypt_bytes(
-        ciphertext, ciphertext_len,
-        decrypted, &decrypted_len,
-        &priv,
-        ctx
-    );
-
-    printf("Decrypted message: %d\n", decrypted[0]);
-
-    // Cleanup
-    rsa_free_keys(&pub, &priv);
+cleanup:
     BN_CTX_free(ctx);
+    BN_free(base);
+    BN_free(exp);
+    BN_free(mod);
+    BN_free(res);
+    return ret;
+}
 
-    return 0;
+/* ── Public API ──────────────────────────────────────────────────────────── */
+
+/*  c = m^e mod n  */
+int rsa_encrypt_bytes(
+    const uint8_t *in,      size_t in_len,
+    const uint8_t *n_bytes, size_t n_len,
+    const uint8_t *e_bytes, size_t e_len,
+    uint8_t       *out,     size_t *out_len
+) {
+    return mod_exp_bytes(in, in_len, e_bytes, e_len, n_bytes, n_len, out, out_len);
+}
+
+/*  m = c^d mod n  */
+int rsa_decrypt_bytes(
+    const uint8_t *in,      size_t in_len,
+    const uint8_t *n_bytes, size_t n_len,
+    const uint8_t *d_bytes, size_t d_len,
+    uint8_t       *out,     size_t *out_len
+) {
+    return mod_exp_bytes(in, in_len, d_bytes, d_len, n_bytes, n_len, out, out_len);
 }
