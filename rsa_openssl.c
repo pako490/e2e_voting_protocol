@@ -6,19 +6,38 @@
 #define KEY_BITS 1024
 #define MAX_BYTES 256  // supports up to 2048-bit keys
 
+#define RSA_MAX_BYTES 256
+
 typedef struct {
+    uint32_t key_id;
+
     BIGNUM *n;
     BIGNUM *e;
+
+    uint8_t n_bytes[RSA_MAX_BYTES];
+    size_t n_len;
+
+    uint8_t e_bytes[RSA_MAX_BYTES];
+    size_t e_len;
 } RSAPublicKey;
 
 typedef struct {
+    uint32_t key_id;
+
     BIGNUM *n;
     BIGNUM *d;
+
+    uint8_t n_bytes[RSA_MAX_BYTES];
+    size_t n_len;
+
+    uint8_t d_bytes[RSA_MAX_BYTES];
+    size_t d_len;
+
+    uint8_t e_bytes[RSA_MAX_BYTES]; // optional but useful
+    size_t e_len;
 } RSAPrivateKey;
 
-/* =========================
-   Utility Functions
-   ========================= */
+// Helpers
 
 void print_hex(const unsigned char *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
@@ -32,11 +51,7 @@ void print_bn(const char *label, BIGNUM *bn) {
     printf("%s: %s\n", label, hex);
     OPENSSL_free(hex);
 }
-
-/* =========================
-   Key Generation
-   ========================= */
-
+// Key gen
 int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
     BIGNUM *p = BN_new();
     BIGNUM *q = BN_new();
@@ -86,9 +101,7 @@ int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
     return 0;
 }
 
-/* =========================
-   Core RSA (BIGNUM)
-   ========================= */
+// RSA (BIGNUM)
 
 BIGNUM *rsa_encrypt_bn(BIGNUM *m, const RSAPublicKey *pub, BN_CTX *ctx) {
     BIGNUM *c = BN_new();
@@ -102,9 +115,7 @@ BIGNUM *rsa_decrypt_bn(BIGNUM *c, const RSAPrivateKey *priv, BN_CTX *ctx) {
     return m;
 }
 
-/* =========================
-   Byte-based API (YOUR DESIGN)
-   ========================= */
+// Byte-based API
 
 int rsa_encrypt_bytes(
     const unsigned char *in, size_t in_len,
@@ -160,10 +171,7 @@ int rsa_decrypt_bytes(
     return 0;
 }
 
-/* =========================
-   Cleanup
-   ========================= */
-
+// Cleanup
 void rsa_free_keys(RSAPublicKey *pub, RSAPrivateKey *priv) {
     BN_free(pub->n);
     BN_free(pub->e);
@@ -171,10 +179,7 @@ void rsa_free_keys(RSAPublicKey *pub, RSAPrivateKey *priv) {
     BN_free(priv->d);
 }
 
-/* =========================
-   MAIN (Test)
-   ========================= */
-
+// Main
 int main() {
     BN_CTX *ctx = BN_CTX_new();
 
