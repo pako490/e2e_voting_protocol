@@ -6,7 +6,7 @@
 
 #include "rsa_openssl.h"
 
-/* ── Debug helpers ───────────────────────────────────────────────────────── */
+// Debug helpers
 
 void print_hex(const unsigned char *buf, size_t len) {
     for (size_t i = 0; i < len; i++)
@@ -20,7 +20,7 @@ void print_bn(const char *label, BIGNUM *bn) {
     OPENSSL_free(hex);
 }
 
-/* ── Key generation ──────────────────────────────────────────────────────── */
+// Key gen
 
 int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
     BIGNUM *p   = BN_new();
@@ -87,12 +87,7 @@ void rsa_free_keys(RSAPublicKey *pub, RSAPrivateKey *priv) {
     if (priv) { BN_free(priv->n); BN_free(priv->d); }
 }
 
-/* ── Internal mod-exp helper ─────────────────────────────────────────────── *
- *                                                                            *
- *  result = base^exp mod mod_n                                               *
- *  Output is zero-padded to mod_n_len bytes (big-endian).                   *
- *                                                                            *
- * ─────────────────────────────────────────────────────────────────────────  */
+// Internal mod-exp helper
 static int mod_exp_bytes(
     const uint8_t *base_bytes, size_t base_len,
     const uint8_t *exp_bytes,  size_t exp_len,
@@ -112,7 +107,7 @@ static int mod_exp_bytes(
     if (!BN_mod_exp(res, base, exp, mod, ctx))
         goto cleanup;
 
-    /* Zero-pad the result to the same width as the modulus */
+    // Zero-pad the result to the same width as the modulus
     int key_bytes = BN_num_bytes(mod);
     memset(out, 0, (size_t)key_bytes);
     BN_bn2bin(res, out + (key_bytes - BN_num_bytes(res)));
@@ -128,9 +123,9 @@ cleanup:
     return ret;
 }
 
-/* ── Public API ──────────────────────────────────────────────────────────── */
+// Public API
 
-/*  c = m^e mod n  */
+//  c = m^e mod n
 int rsa_encrypt_bytes(
     const uint8_t *in,      size_t in_len,
     const uint8_t *n_bytes, size_t n_len,
@@ -140,7 +135,7 @@ int rsa_encrypt_bytes(
     return mod_exp_bytes(in, in_len, e_bytes, e_len, n_bytes, n_len, out, out_len);
 }
 
-/*  m = c^d mod n  */
+// m = c^d mod n
 int rsa_decrypt_bytes(
     const uint8_t *in,      size_t in_len,
     const uint8_t *n_bytes, size_t n_len,
