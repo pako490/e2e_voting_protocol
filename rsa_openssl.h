@@ -5,10 +5,9 @@
 #include <stddef.h>
 #include <openssl/bn.h>
 
-#define RSA_MAX_BYTES 256
 #define KEY_BITS 1024
 
-/* ── Key structs ─────────────────────────────────────────────────────────── */
+// Key structs
 
 typedef struct {
     uint32_t key_id;
@@ -39,19 +38,11 @@ typedef struct {
     size_t   e_len;
 } RSAPrivateKey;
 
-/* ── Key generation ──────────────────────────────────────────────────────── */
-
+// Key generation
 int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx);
 void rsa_free_keys(RSAPublicKey *pub, RSAPrivateKey *priv);
 
-/* ── Raw-bytes API (matches backend.c call sites) ────────────────────────── *
- *                                                                            *
- *  Encrypt:  c = m^e mod n                                                  *
- *  Decrypt:  m = c^d mod n                                                  *
- *                                                                            *
- *  All big-endian byte arrays; BN_CTX is managed internally.                *
- * ─────────────────────────────────────────────────────────────────────────  */
-
+// RSA encryption/decryption of byte buffers
 int rsa_encrypt_bytes(
     const uint8_t *in,      size_t in_len,
     const uint8_t *n_bytes, size_t n_len,
@@ -66,9 +57,8 @@ int rsa_decrypt_bytes(
     uint8_t       *out,     size_t *out_len
 );
 
-/* ── Debug helpers ───────────────────────────────────────────────────────── */
-
+// Debug helpers
 void print_hex(const unsigned char *buf, size_t len);
 void print_bn (const char *label, BIGNUM *bn);
 
-#endif /* RSA_OPENSSL_H */
+#endif
