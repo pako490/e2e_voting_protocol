@@ -1,3 +1,9 @@
+/* Overview
+- 64-bit Key
+- Meaning 64-bit message
+- Tested over kinda large primes
+*/
+
 #include <stdio.h>
 #include <stdint.h>
 
@@ -85,33 +91,57 @@ u64 modinv(u64 e, u64 phi) {
 
 */
 
-u64 e, d, n;
+typedef struct {
+    u64 e;
+    u64 n;
+} PublicKey;
+
+typedef struct {
+    u64 d;
+    u64 n;
+} PrivateKey;
+
+ u64 e, d, n;
+ PrivateKey priv;
+ PublicKey pub;
 
 void generate_keys() {
-    u64 p = 999331;
-    u64 q = 115249;
+    // Def need a function to generate random in the future
+    // u64 p = 99194853094755497;    // Kinda failed because right now the key is only limited to 64-bit
+
+    // Small n
+    // u64 p = 39916801;
+    // u64 q = 115249;
+
+    // n should be around 63 bits for this test case
+    // So i guess we can group these number and convert them to ASCII?
+    u64 p = 614657;
+    u64 q = 10963707205259;
 
     n = p * q;
+    pub.n = n;
+    priv.n = n;
+
     u64 phi = (p - 1) * (q - 1);
 
-    e = 65537; // Common choice for e (i guess?)
+    pub.e = 65537; // Common choice for e (i guess?)
 
-    while (gcd(e, phi) != 1) {
-        e += 2; // try next odd number
+    while (gcd(pub.e, phi) != 1) {
+        pub.e += 2; // try next odd number
     }
 
     // Hmm, the more correct approach for this is to regenerate the prime until gcd(e, phi) == 1
     // This is just testing --> but will be crucial for separate key gen in the future
-    d = modinv(e, phi);
+    priv.d = modinv(pub.e, phi);
 }
 
 // RSA main stuff
-u64 encrypt(u64 m, u64 e_, u64 n_) {
-    return modexp(m, e_, n_);
+u64 encrypt(u64 msg, PublicKey pub) {
+    return modexp(msg, pub.e, pub.n);
 }
 
-u64 decrypt(u64 c, u64 d_, u64 n_) {
-    return modexp(c, d_, n_);
+u64 decrypt(u64 ct, PrivateKey priv) {
+    return modexp(ct, priv.d, priv.n);
 }
 
 

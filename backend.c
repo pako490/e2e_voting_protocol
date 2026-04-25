@@ -11,10 +11,29 @@
 #include "protocol.h"
 #include "comm.h"
 #include "storage.h"
-#include "keyloader.h"
-#include "rsa.h" //saving the best for last
+
+#include "rsa_openssl.h" //saving the best for last
+#include "key.h"
 #include "codecard.h"
 #include "receipt.h"
+
+// RSA Helpers
+// uint64 → big-endian bytes
+static void u64_to_bytes(uint64_t val, uint8_t *out, size_t *len) {
+    *len = 8;
+    for (int i = 0; i < 8; i++) {
+        out[7 - i] = (val >> (i * 8)) & 0xFF;
+    }
+}
+
+// big-endian bytes → uint64
+static uint64_t bytes_to_u64(const uint8_t *in, size_t len) {
+    uint64_t val = 0;
+    for (size_t i = 0; i < len; i++) {
+        val = (val << 8) | in[i];
+    }
+    return val;
+}
 
 typedef enum {
     STATE_HELLO,
@@ -35,16 +54,21 @@ typedef struct {
 } ClientSession;
 
 typedef struct {
-    uint64_t encrypted_vote;
+    uint32_t receipt_id;
     uint32_t candidate_id;
+
+    uint8_t encrypted_vote[RSA_MAX_BYTES];
+    uint32_t encrypted_vote_len;
 } BulletinEntry;
 
+
 static PublicKeyList voter_public_keys;
+static PublicKeyList ballot_public_keys;
 static PrivateKeyList ballot_private_keys;
 static int vote_tally[4] = {0, 0, 0, 0};
-#define MAX_BULLETIN 1000
-static BulletinEntry bulletin_board[MAX_BULLETIN];
-static int bulletin_count = 0;
+#define MAX_BULLETIN_ENTRIES 1000
+static BulletinEntry bulletin_board[MAX_BULLETIN_ENTRIES];
+static int bulletin_count = 0; 
 
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
@@ -87,34 +111,60 @@ static void build_tally(char *buf, size_t len)
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
 }
 
-static int bulletin_lookup(uint64_t encrypted_vote, char *buf, size_t len) {
-    for (int i = 0; i < bulletin_count; i++) {
-        if (bulletin_board[i].encrypted_vote == encrypted_vote) {
-            snprintf(buf, len, "Encrypted Vote: %" PRIu64 "\nCandidate: %u", encrypted_vote, bulletin_board[i].candidate_id);
+static int bulletin_lookup(const uint8_t *encrypted_vote,
+                           uint32_t encrypted_vote_len,
+                           char *buf,
+                           size_t len) {
+    for (uint32_t i = 0; i < bulletin_count; i++) {
+        if (bulletin_board[i].encrypted_vote_len == encrypted_vote_len &&
+            memcmp(bulletin_board[i].encrypted_vote,
+                   encrypted_vote,
+                   encrypted_vote_len) == 0) {
+
+            snprintf(buf, len,
+                     "Receipt ID: %u -> Candidate %u\n",
+                     bulletin_board[i].receipt_id,
+                     bulletin_board[i].candidate_id);
             return 0;
         }
     }
 
-    snprintf(buf, len, "Vote not found on bulletin board.");
+    snprintf(buf, len, "Encrypted vote not found.\n");
     return -1;
 }
 
-static void full_bulletin(char *buf, size_t len) {
-    int offset = 0;
+static int bulletin_full(char *buf, size_t len) {
+    size_t offset = 0;
 
-    if (bulletin_count == 0) {
-        snprintf(buf + offset, len - offset, "No votes recorded.\n");
-        return;
-    }
+    for (uint32_t i = 0; i < bulletin_count; i++) {
+        int written = snprintf(buf + offset, len - offset, "Encrypted vote: ");
 
-    for (int i = 0; i < bulletin_count; i++) {
-        int vote = snprintf(buf + offset, len - offset, "%" PRIu64 " -> Candidate %u\n", bulletin_board[i].encrypted_vote, bulletin_board[i].candidate_id);
-
-        if (vote < 0 || vote >= (int)(len - offset)) {
-            break;
+        if (written < 0 || (size_t)written >= len - offset) {
+            return -1;
         }
-        offset += vote;
+        offset += (size_t)written;
+
+        for (uint32_t j = 0; j < bulletin_board[i].encrypted_vote_len; j++) {
+            written = snprintf(buf + offset, len - offset,
+                               "%02X", bulletin_board[i].encrypted_vote[j]);
+
+            if (written < 0 || (size_t)written >= len - offset) {
+                return -1;
+            }
+            offset += (size_t)written;
+        }
+
+        written = snprintf(buf + offset, len - offset,
+                           " -> Candidate %u\n",
+                           bulletin_board[i].candidate_id);
+
+        if (written < 0 || (size_t)written >= len - offset) {
+            return -1;
+        }
+        offset += (size_t)written;
     }
+
+    return 0;
 }
 
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
@@ -172,7 +222,7 @@ static void process_message(ClientSession *session,
 
             // tally
             if (session->voter_id == 0) {
-                char buf[256];
+                char buf[MESSAGE_PAYLOAD_LEN];
                 build_tally(buf, sizeof(buf));
 
                 outgoing->type = MSG_STATUS;
@@ -185,14 +235,14 @@ static void process_message(ClientSession *session,
 
             // bulletin board & lookup
             if (session->voter_id == 9999) {
-                char buf[512];
+                char buf[MESSAGE_PAYLOAD_LEN];
                 outgoing->type = MSG_STATUS;
 
-                if (incoming->value == 0) {  // full bulletin
-                    full_bulletin(buf, sizeof(buf));
+                if (incoming->value_len == 0) {  // full bulletin
+                    bulletin_full(buf, sizeof(buf));
                     outgoing->status = STATUS_YES;
                 } else {  // lookup
-                    if (bulletin_lookup(incoming->value, buf, sizeof(buf)) == 0) {
+                    if (bulletin_lookup(incoming->value, incoming->value_len, buf, sizeof(buf)) == 0) {
                         outgoing->status = STATUS_YES;
                     } else {
                         outgoing->status = STATUS_NO;
@@ -240,9 +290,44 @@ static void process_message(ClientSession *session,
             outgoing->type = MSG_CHALLENGE;
             outgoing->status = STATUS_YES;
             outgoing->key_id = auth_pub->key_id;
-            outgoing->value =
-                rsa_encrypt_uint64(session->auth_challenge, auth_pub->e, auth_pub->n);
-            outgoing->modulus_n = auth_pub->n;
+
+            // BIGNUM *m = BN_new();
+            // BIGNUM *c = BN_new();
+            // BN_set_word(m, session->auth_challenge);
+
+            // c = rsa_encrypt_bn(m, auth_pub, rsa_ctx);
+
+            // outgoing->value = BN_get_word(c);
+            // outgoing->modulus_n = auth_pub->n;
+
+            uint8_t plaintext[8];
+            size_t plaintext_len;
+
+            uint8_t ciphertext[RSA_MAX_BYTES];
+            size_t ciphertext_len;
+
+            // Convert challenge to bytes
+            u64_to_bytes(session->auth_challenge, plaintext, &plaintext_len);
+
+            // Encryption
+            rsa_encrypt_bytes(
+                plaintext, plaintext_len,
+                auth_pub->n_bytes, auth_pub->n_len,
+                auth_pub->e_bytes, auth_pub->e_len,
+                ciphertext, &ciphertext_len
+            );
+
+            // Store in message
+            memcpy(outgoing->value, ciphertext, ciphertext_len);
+            outgoing->value_len = ciphertext_len;
+
+            // Copy Public key
+            memcpy(outgoing->modulus_n, auth_pub->n_bytes, auth_pub->n_len);
+            outgoing->n_len = auth_pub->n_len;
+
+            memcpy(outgoing->exponent_e, auth_pub->e_bytes, auth_pub->e_len);
+            outgoing->e_len = auth_pub->e_len;
+
             snprintf(outgoing->payload, sizeof(outgoing->payload),
                      "Decrypt the challenge with your private key.");
 
@@ -257,7 +342,9 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            if (incoming->value != session->auth_challenge) {
+            uint64_t response = bytes_to_u64(incoming->value, incoming->value_len);
+        
+            if (response != session->auth_challenge) {
                 set_error(outgoing, "Authentication failed.");
                 session->state = STATE_DONE;
                 return;
@@ -288,14 +375,20 @@ static void process_message(ClientSession *session,
             outgoing->type = MSG_BALLOT_DATA;
             outgoing->status = STATUS_YES;
             outgoing->key_id = ballot_priv->key_id;
-            outgoing->modulus_n = ballot_priv->n;
+            // outgoing->modulus_n = ballot_priv->n;
 
             /*
                 In this demo, we reuse key_id 1 in the private list and derive the
                 public exponent from your generated data convention.
                 For the cleanest setup, also load a ballot public key list and use e from there.
             */
-            outgoing->exponent_e = 65537;
+            // outgoing->exponent_e = 65537;
+
+            memcpy(outgoing->modulus_n, ballot_priv->n_bytes, ballot_priv->n_len);
+            outgoing->n_len = ballot_priv->n_len;
+
+            memcpy(outgoing->exponent_e, ballot_priv->e_bytes, ballot_priv->e_len);
+            outgoing->e_len = ballot_priv->e_len;
 
             session->state = STATE_BALLOT;
             return;
@@ -318,8 +411,31 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            decrypted_vote =
-                rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
+            if (bulletin_count < MAX_BULLETIN_ENTRIES) {
+                memcpy(
+                    bulletin_board[bulletin_count].encrypted_vote,
+                    incoming->value,
+                    incoming->value_len
+                );
+
+                bulletin_board[bulletin_count].encrypted_vote_len =
+                    incoming->value_len;
+            }
+
+            // decrypted_vote =
+            //     rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
+
+            uint8_t decrypted[RSA_MAX_BYTES];
+            size_t decrypted_len;
+
+            rsa_decrypt_bytes(
+                incoming->value, incoming->value_len,
+                ballot_priv->n_bytes, ballot_priv->n_len,
+                ballot_priv->d_bytes, ballot_priv->d_len,
+                decrypted, &decrypted_len
+            );
+
+            uint64_t decrypted_vote = bytes_to_u64(decrypted, decrypted_len);
 
             if (!is_valid_ballot_choice((uint32_t)decrypted_vote)) {
                 set_error(outgoing, "Invalid decrypted vote.");
@@ -334,6 +450,8 @@ static void process_message(ClientSession *session,
                 vote_tally[session->selected_choice - 1]++;
             }
 
+            
+
             session->receipt_id = next_receipt_id();
 
             voter_id_to_key_string(session->voter_id,
@@ -344,12 +462,15 @@ static void process_message(ClientSession *session,
                 set_error(outgoing, "Failed to record used voter.");
                 session->state = STATE_DONE;
                 return;
-            }
+            }   
 
-            // bulletin board once vote accepted
-            if (bulletin_count < MAX_BULLETIN) {
-                bulletin_board[bulletin_count].encrypted_vote = incoming;
-                bulletin_board[bulletin_count].candidate_id = session->selected_choice;
+            if (bulletin_count < MAX_BULLETIN_ENTRIES) {
+                bulletin_board[bulletin_count].receipt_id =
+                    session->receipt_id;
+
+                bulletin_board[bulletin_count].candidate_id =
+                    session->selected_choice;
+
                 bulletin_count++;
             }
 
@@ -366,8 +487,10 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            encrypted_receipt_value =
-                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+            // encrypted_receipt_value =
+            //     rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+
+            // encrypted_receipt_value = rsa_encrypt_bytes(receipt_code_value, auth_pub->e, auth_pub->n)
 
             cipher_len = snprintf((char *)ciphertext_buf,
                                   sizeof(ciphertext_buf),
@@ -404,15 +527,33 @@ static void process_message(ClientSession *session,
                 set_error(outgoing, "Failed to format receipt.");
                 session->state = STATE_DONE;
                 return;
-            }
+            }   
+
+            uint8_t receipt_bytes[8];
+            size_t receipt_len = 0;
+
+            uint8_t encrypted_receipt[RSA_MAX_BYTES];
+            size_t encrypted_receipt_len = 0;
+
+            u64_to_bytes(receipt_code_value, receipt_bytes, &receipt_len);
+
+            rsa_encrypt_bytes(
+                receipt_bytes, receipt_len,
+                auth_pub->n_bytes, auth_pub->n_len,
+                auth_pub->e_bytes, auth_pub->e_len,
+                encrypted_receipt, &encrypted_receipt_len
+            );
+
+            memcpy(outgoing->value, encrypted_receipt, encrypted_receipt_len);
+            outgoing->value_len = encrypted_receipt_len;
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
             outgoing->key_id = auth_pub->key_id;
             outgoing->receipt_id = session->receipt_id;
             outgoing->choice_id = session->selected_choice;
-            outgoing->value = encrypted_receipt_value;
-            outgoing->modulus_n = auth_pub->n;
+            // outgoing->value = encrypted_receipt_value;
+            // outgoing->modulus_n = auth_pub->n;
 
             session->state = STATE_DONE;
             return;
@@ -476,7 +617,7 @@ int main(void) {
 
     //--------------LOADS DATA -------------------//
 
-    if (load_valid_keys_binary("public_auth_keys.bin") < 0) {
+    if (load_valid_keys_binary("keys/public_auth_keys.bin") < 0) {
         fprintf(stderr, "[BACKEND] Failed to load valid voter keys\n");
         return 1;
     }
@@ -486,16 +627,20 @@ int main(void) {
         return 1;
     }
 
-    if (load_public_key_list_bin("public_ballot_keys.bin", &voter_public_keys) < 0) {
-        fprintf(stderr, "[BACKEND] Failed to load public key list\n");
+    if (load_public_key_list_bin("keys/public_auth_keys.bin", &voter_public_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load voter public key list\n");
         return 1;
     }
 
-    if (load_private_key_list_bin("ballot_priv_keys.bin", &ballot_private_keys) < 0) {
+    if (load_public_key_list_bin("keys/public_ballot_keys.bin", &ballot_public_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load ballot public key list\n");
+        return 1;
+    }
+
+    if (load_private_key_list_bin("keys/ballot_priv_keys.bin", &ballot_private_keys) < 0) {
         fprintf(stderr, "[BACKEND] Failed to load ballot private key list\n");
         return 1;
     }
-
 
     init_used_keys();
 
@@ -543,5 +688,6 @@ int main(void) {
     }
 
     close(server_fd);
+
     return 0;
 }
