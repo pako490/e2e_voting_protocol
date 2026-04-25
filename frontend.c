@@ -110,11 +110,32 @@ int main(void) {
     }
     printf("[FRONTEND] Connected to backend\n");
 
-    printf("Enter voter ID: ");
+    printf("Enter voter ID (0 = Vote Tally, 9999 = Bulletin/Lookup): ");
     if (scanf("%u", &voter_id) != 1) {
         fprintf(stderr, "Invalid voter ID\n");
         close(sock_fd);
         return 1;
+    }
+
+    if (voter_id == 9999) {
+        uint64_t encrypted_vote = 0;
+
+        printf("Enter encrypted vote to lookup (0 = show full bulletin): ");
+        scanf("%llu", (unsigned long long*)&encrypted_vote);
+
+        memset(&outgoing, 0, sizeof(outgoing));
+        outgoing.type = MSG_HELLO;
+        outgoing.status = STATUS_NONE;
+        outgoing.voter_id = 9999;
+        outgoing.value = encrypted_vote;
+
+        send_message(sock_fd, &outgoing, sizeof(outgoing));
+        recv_message(sock_fd, &incoming, sizeof(incoming), &received_size);
+
+        printf("\n[FRONTEND] Bulletin Board:\n%s\n", incoming.payload);
+
+        close(sock_fd);
+        return 0;
     }
 
     memset(&outgoing, 0, sizeof(outgoing));
@@ -141,9 +162,22 @@ int main(void) {
         close(sock_fd);
         return 1;
     }
-    if (incoming.type != MSG_CHALLENGE) {
-        fprintf(stderr, "[FRONTEND] Expected challenge, got type=%u\n", incoming.type);
+
+    if (incoming.type == MSG_STATUS) {
+        //call tally
+        printf("\n[FRONTEND] Vote Tally: \n%s\n", incoming.payload);
         close(sock_fd);
+        return 0;
+    } 
+
+    if (incoming.type == MSG_RECEIPT && incoming.status == STATUS_NO) {
+        printf("[FRONTEND] You have already voted.\n");
+        printf("%s\n", incoming.payload);
+        return 0;
+    }
+
+    if (incoming.type != MSG_CHALLENGE) {
+        printf("[FRONTEND] Expected challenge, got type=%d\n", incoming.type);
         return 1;
     }
 
@@ -231,6 +265,7 @@ int main(void) {
     );
 
     // Vote
+        printf("[DEBUG] Encrypted vote: %llu\n", (unsigned long long)encrypted_vote);
     memset(&outgoing, 0, sizeof(outgoing));
     outgoing.type      = MSG_VOTE;
     outgoing.status    = STATUS_NONE;
@@ -280,6 +315,9 @@ int main(void) {
     printf("[FRONTEND] Receipt code value: %llu\n", (unsigned long long)receipt_value);
     printf("[FRONTEND] Code card result:   %s\n",   receipt_text);
 
+    // printf("[FRONTEND] Receipt ID: %u\n", incoming.receipt_id);
+    printf("[FRONTEND] %s\n", incoming.payload);
+        
     close(sock_fd);
     return 0;
 }

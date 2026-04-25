@@ -17,7 +17,6 @@ void simple_hash(const unsigned char *data, size_t len, unsigned char out[HASH_L
 
 void derive_fake_code(const unsigned char *seed, int candidate_id,
                       const unsigned char *hash, char *out) {
-    static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     for (int i = 0; i < 4; i++) {
         unsigned int v = (unsigned int)candidate_id * 31 + i * 17;

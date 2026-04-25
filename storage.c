@@ -13,6 +13,8 @@ int used_key_count = 0;
 BallotOption ballot_options[MAX_BALLOT_OPTIONS];
 int ballot_option_count = 0;
 
+static uint32_t current_receipt_id = 1000;
+
 static void safe_copy_key(char dest[KEY_LEN], const char *src) {
     strncpy(dest, src, KEY_LEN - 1);
     dest[KEY_LEN - 1] = '\0';
@@ -193,4 +195,35 @@ void print_ballot(void) {
     for (int i = 0; i < ballot_option_count; i++) {
         printf("  %u -> %s\n", ballot_options[i].id, ballot_options[i].text);
     }
+}
+
+uint32_t next_receipt_id(void) {
+    return current_receipt_id++;
+}
+
+int append_receipt(const StoredReceipt *r) {
+    FILE *fp = fopen("receipts.bin", "ab");
+    if (!fp) return -1;
+
+    size_t written = fwrite(r, sizeof(StoredReceipt), 1, fp);
+    fclose(fp);
+
+    return (written == 1) ? 0 : -1;
+}
+
+int find_receipt_by_voter_id(uint32_t voter_id, StoredReceipt *out) {
+    FILE *fp = fopen("receipts.bin", "rb");
+    if (!fp) return -1;
+
+    StoredReceipt temp;
+    while (fread(&temp, sizeof(StoredReceipt), 1, fp) == 1) {
+        if (temp.voter_id == voter_id) {
+            *out = temp;
+            fclose(fp);
+            return 0;
+        }
+    }
+
+    fclose(fp);
+    return -1;
 }

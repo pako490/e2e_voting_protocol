@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <inttypes.h>
 
 #include "protocol.h"
 #include "comm.h"
@@ -14,6 +15,7 @@
 #include "rsa_openssl.h" //saving the best for last
 #include "key.h"
 #include "codecard.h"
+#include "receipt.h"
 
 // RSA Helpers
 // uint64 → big-endian bytes
@@ -47,22 +49,48 @@ typedef struct {
     uint64_t auth_challenge;
     uint32_t selected_choice;
     uint32_t receipt_id;
+    CodeCard code_card;
+    VoteReceipt receipt;
 } ClientSession;
+
+typedef struct {
+    uint64_t encrypted_vote;
+    uint32_t candidate_id;
+} BulletinEntry;
 
 static PublicKeyList voter_public_keys;
 static PublicKeyList ballot_public_keys;
 static PrivateKeyList ballot_private_keys;
-
-static uint32_t next_receipt_id(void) {
-    static uint32_t id = 1000;
-    return id++;
-}
+static int vote_tally[4] = {0, 0, 0, 0};
+#define MAX_BULLETIN 1000
+static BulletinEntry bulletin_board[MAX_BULLETIN];
+static int bulletin_count = 0;
 
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
     outgoing->type = MSG_ERROR;
     outgoing->status = STATUS_NO;
     snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", message);
+}
+
+static int append_code_card_text(char *buffer, size_t buffer_size, const CodeCard *card) {
+    size_t used = strlen(buffer);
+
+    int n = snprintf(buffer + used, buffer_size - used,
+                     "\nCode Card\n"
+                     "1 -> %s\n"
+                     "2 -> %s\n"
+                     "3 -> %s\n"
+                     "4 -> %s\n"
+                     "Confirmation Code -> %s\n",
+                     card->entries[0].vote_code,
+                     card->entries[1].vote_code,
+                     card->entries[2].vote_code,
+                     card->entries[3].vote_code,
+                     card->confirm_code);
+
+    if (n < 0 || (size_t)n >= buffer_size - used) return -1;
+    return 0;
 }
 
 static const RSAPrivateKey *get_ballot_private_key(void) {
@@ -73,8 +101,67 @@ static const RSAPrivateKey *get_ballot_private_key(void) {
     return &ballot_private_keys.keys[0];
 }
 
+static void build_tally(char *buf, size_t len)
+{
+    snprintf(buf, len,
+        "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
+}
+
+static int bulletin_lookup(uint64_t encrypted_vote, char *buf, size_t len) {
+    for (int i = 0; i < bulletin_count; i++) {
+        if (bulletin_board[i].encrypted_vote == encrypted_vote) {
+            snprintf(buf, len, "Encrypted Vote: %" PRIu64 "\nCandidate: %u", encrypted_vote, bulletin_board[i].candidate_id);
+            return 0;
+        }
+    }
+
+    snprintf(buf, len, "Vote not found on bulletin board.");
+    return -1;
+}
+
+static void full_bulletin(char *buf, size_t len) {
+    int offset = 0;
+
+    if (bulletin_count == 0) {
+        snprintf(buf + offset, len - offset, "No votes recorded.\n");
+        return;
+    }
+
+    for (int i = 0; i < bulletin_count; i++) {
+        int vote = snprintf(buf + offset, len - offset, "%" PRIu64 " -> Candidate %u\n", bulletin_board[i].encrypted_vote, bulletin_board[i].candidate_id);
+
+        if (vote < 0 || vote >= (int)(len - offset)) {
+            break;
+        }
+        offset += vote;
+    }
+}
+
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
     snprintf(out, out_len, "%u", voter_id);
+}
+
+static int format_receipt_text(char *buffer, size_t buffer_size,
+                               uint32_t receipt_id,
+                               const VoteReceipt *receipt) {
+    int written = 0;
+
+    int n = snprintf(buffer + written, buffer_size - written,
+                     "Vote Receipt\nReceipt ID: %u\n",
+                     receipt_id);
+    if (n < 0 || (size_t)n >= buffer_size - written) return -1;
+    written += n;
+
+    for (int i = 0; i < NUM_CANDIDATES; i++) {
+        n = snprintf(buffer + written, buffer_size - written,
+                     "%u -> %s\n",
+                     receipt->entries[i].candidate_id,
+                     receipt->entries[i].verification_code);
+        if (n < 0 || (size_t)n >= buffer_size - written) return -1;
+        written += n;
+    }
+
+    return 0;
 }
 
 static void process_message(ClientSession *session,
@@ -89,7 +176,12 @@ static void process_message(ClientSession *session,
     memset(outgoing, 0, sizeof(*outgoing));
 
     switch (session->state) {
-        case STATE_HELLO:
+        case STATE_HELLO: {
+            char used_key_buf_auth[32];
+            StoredReceipt stored;
+
+            printf("[BACKEND] Received voter_id: %u\n", incoming->voter_id);
+
             if (incoming->type != MSG_HELLO) {
                 set_error(outgoing, "Expected hello message.");
                 return;
@@ -98,24 +190,72 @@ static void process_message(ClientSession *session,
             session->voter_id = incoming->voter_id;
             session->auth_key_id = incoming->voter_id;
 
+            // tally
+            if (session->voter_id == 0) {
+                char buf[256];
+                build_tally(buf, sizeof(buf));
+
+                outgoing->type = MSG_STATUS;
+                outgoing->status = STATUS_YES;
+                snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
+
+                session->state = STATE_DONE;
+                return;
+            }
+
+            // bulletin board & lookup
+            if (session->voter_id == 9999) {
+                char buf[512];
+                outgoing->type = MSG_STATUS;
+
+                if (incoming->value == 0) {  // full bulletin
+                    full_bulletin(buf, sizeof(buf));
+                    outgoing->status = STATUS_YES;
+                } else {  // lookup
+                    if (bulletin_lookup(incoming->value, buf, sizeof(buf)) == 0) {
+                        outgoing->status = STATUS_YES;
+                    } else {
+                        outgoing->status = STATUS_NO;
+                    }
+                }
+                snprintf(outgoing->payload, sizeof(outgoing->payload), "%s", buf);
+
+                session->state = STATE_DONE;
+                return;
+            }
+
             auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
             if (auth_pub == NULL) {
                 set_error(outgoing, "Unknown voter ID.");
                 return;
             }
 
-            char used_key_buf_auth[32];
-            voter_id_to_key_string(session->voter_id, used_key_buf_auth, sizeof(used_key_buf_auth));
+            voter_id_to_key_string(session->voter_id,
+                                   used_key_buf_auth,
+                                   sizeof(used_key_buf_auth));
 
             if (is_used_key(used_key_buf_auth)) {
-                set_error(outgoing, "Voter has already voted.");
+                if (find_receipt_by_voter_id(session->voter_id, &stored) == 0) {
+                    if (format_receipt_text(outgoing->payload,
+                                            sizeof(outgoing->payload),
+                                            stored.receipt_id,
+                                            &stored.receipt) < 0) {
+                        set_error(outgoing, "Voter has already voted, but receipt formatting failed.");
+                        session->state = STATE_DONE;
+                        return;
+                    }
+
+                    outgoing->type = MSG_RECEIPT;
+                    outgoing->status = STATUS_NO;
+                } else {
+                    set_error(outgoing, "Voter has already voted, but no receipt was found.");
+                }
+
                 session->state = STATE_DONE;
                 return;
             }
-        
 
-            session->auth_challenge =
-                (uint64_t)(rand() % 10000 + 1000);
+            session->auth_challenge = (uint64_t)(rand() % 10000 + 1000);
 
             outgoing->type = MSG_CHALLENGE;
             outgoing->status = STATUS_YES;
@@ -163,6 +303,7 @@ static void process_message(ClientSession *session,
 
             session->state = STATE_AUTH;
             return;
+        }
 
         case STATE_AUTH:
 
@@ -179,6 +320,8 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            init_code_card(&session->code_card);
+
             ballot_priv = get_ballot_private_key();
             if (ballot_priv == NULL) {
                 set_error(outgoing, "No ballot key loaded.");
@@ -188,6 +331,13 @@ static void process_message(ClientSession *session,
 
             if (build_ballot_text(outgoing->payload, sizeof(outgoing->payload)) < 0) {
                 set_error(outgoing, "Failed to build ballot.");
+                session->state = STATE_DONE;
+                return;
+            }
+
+            if (append_code_card_text(outgoing->payload, sizeof(outgoing->payload),
+                                    &session->code_card) < 0) {
+                set_error(outgoing, "Failed to append code card.");
                 session->state = STATE_DONE;
                 return;
             }
@@ -213,7 +363,12 @@ static void process_message(ClientSession *session,
             session->state = STATE_BALLOT;
             return;
 
-        case STATE_BALLOT:
+        case STATE_BALLOT: {
+            unsigned char ciphertext_buf[64];
+            int cipher_len;
+            char used_key_buf_ballot[32];
+            StoredReceipt stored;
+
             if (incoming->type != MSG_VOTE) {
                 set_error(outgoing, "Expected vote message.");
                 return;
@@ -248,15 +403,29 @@ static void process_message(ClientSession *session,
             }
 
             session->selected_choice = (uint32_t)decrypted_vote;
+
+            // store vote tallies 
+            if (session->selected_choice >= 1 && session->selected_choice <= 4) {
+                vote_tally[session->selected_choice - 1]++;
+            }
+
             session->receipt_id = next_receipt_id();
 
-            char used_key_buf_ballot[32];
-            voter_id_to_key_string(session->voter_id, used_key_buf_ballot, sizeof(used_key_buf_ballot));
+            voter_id_to_key_string(session->voter_id,
+                                   used_key_buf_ballot,
+                                   sizeof(used_key_buf_ballot));
 
             if (append_used_key(used_key_buf_ballot) < 0) {
                 set_error(outgoing, "Failed to record used voter.");
                 session->state = STATE_DONE;
                 return;
+            }
+
+            // bulletin board once vote accepted
+            if (bulletin_count < MAX_BULLETIN) {
+                bulletin_board[bulletin_count].encrypted_vote = incoming;
+                bulletin_board[bulletin_count].candidate_id = session->selected_choice;
+                bulletin_count++;
             }
 
             if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
@@ -272,35 +441,45 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            // encrypted_receipt_value =
-            //     rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+            encrypted_receipt_value =
+                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
 
-            uint8_t receipt_bytes[8];
-            size_t receipt_len;
+            cipher_len = snprintf((char *)ciphertext_buf,
+                                  sizeof(ciphertext_buf),
+                                  "vote:%u",
+                                  session->selected_choice);
 
-            uint8_t encrypted[RSA_MAX_BYTES];
-            size_t encrypted_len;
+            if (cipher_len < 0 || (size_t)cipher_len >= sizeof(ciphertext_buf)) {
+                set_error(outgoing, "Failed to build ciphertext buffer.");
+                session->state = STATE_DONE;
+                return;
+            }
 
-            // Convert receipt → bytes
-            u64_to_bytes(receipt_code_value, receipt_bytes, &receipt_len);
+            generate_receipt(&session->code_card,
+                             session->selected_choice,
+                             ciphertext_buf,
+                             (size_t)cipher_len,
+                             &session->receipt);
 
-            // Encrypt
-            rsa_encrypt_bytes(
-                receipt_bytes, receipt_len,
-                auth_pub->n_bytes, auth_pub->n_len,
-                auth_pub->e_bytes, auth_pub->e_len,
-                encrypted, &encrypted_len
-            );
+            stored.receipt_id = session->receipt_id;
+            stored.voter_id   = session->voter_id;
+            stored.choice_id  = session->selected_choice;
+            stored.receipt    = session->receipt;
 
-            // Store
-            memcpy(outgoing->value, encrypted, encrypted_len);
-            outgoing->value_len = encrypted_len;
+            if (append_receipt(&stored) < 0) {
+                set_error(outgoing, "Failed to store receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
 
-            memcpy(outgoing->modulus_n, auth_pub->n_bytes, auth_pub->n_len);
-            outgoing->n_len = auth_pub->n_len;
-
-            memcpy(outgoing->exponent_e, auth_pub->e_bytes, auth_pub->e_len);
-            outgoing->e_len = auth_pub->e_len;
+            if (format_receipt_text(outgoing->payload,
+                                    sizeof(outgoing->payload),
+                                    session->receipt_id,
+                                    &session->receipt) < 0) {
+                set_error(outgoing, "Failed to format receipt.");
+                session->state = STATE_DONE;
+                return;
+            }
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;
@@ -309,11 +488,10 @@ static void process_message(ClientSession *session,
             outgoing->choice_id = session->selected_choice;
             // outgoing->value = encrypted_receipt_value;
             // outgoing->modulus_n = auth_pub->n;
-            snprintf(outgoing->payload, sizeof(outgoing->payload),
-                     "Decrypt the receipt value and check your code card.");
 
             session->state = STATE_DONE;
             return;
+        }
 
         case STATE_DONE:
         default:

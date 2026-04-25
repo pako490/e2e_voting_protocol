@@ -2,6 +2,7 @@
 #define STORAGE_H
 
 #include <stdint.h>
+#include "receipt.h"
 
 #define MAX_KEYS 1000
 #define KEY_LEN 32
@@ -17,6 +18,13 @@ typedef struct {
     uint32_t id;
     char text[OPTION_TEXT_LEN];
 } BallotOption;
+
+typedef struct {
+    uint32_t receipt_id;
+    uint32_t voter_id;
+    uint32_t choice_id;
+    VoteReceipt receipt;
+} StoredReceipt;
 
 /* Global arrays and counters */
 extern VotingKey valid_keys[MAX_KEYS];
@@ -48,5 +56,10 @@ int build_ballot_text(char *buffer, int buffer_size);
 void print_valid_keys(void);
 void print_used_keys(void);
 void print_ballot(void);
+
+/* Receipt handling */
+uint32_t next_receipt_id(void);
+int append_receipt(const StoredReceipt *record);
+int find_receipt_by_voter_id(uint32_t voter_id, StoredReceipt *out);
 
 #endif
