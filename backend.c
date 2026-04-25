@@ -54,17 +54,21 @@ typedef struct {
 } ClientSession;
 
 typedef struct {
-    uint64_t encrypted_vote;
+    uint32_t receipt_id;
     uint32_t candidate_id;
+
+    uint8_t encrypted_vote[RSA_MAX_BYTES];
+    uint32_t encrypted_vote_len;
 } BulletinEntry;
+
 
 static PublicKeyList voter_public_keys;
 static PublicKeyList ballot_public_keys;
 static PrivateKeyList ballot_private_keys;
 static int vote_tally[4] = {0, 0, 0, 0};
-#define MAX_BULLETIN 1000
-static BulletinEntry bulletin_board[MAX_BULLETIN];
-static int bulletin_count = 0;
+#define MAX_BULLETIN_ENTRIES 1000
+static BulletinEntry bulletin_board[MAX_BULLETIN_ENTRIES];
+static int bulletin_count = 0; 
 
 static void set_error(ServerMessage *outgoing, const char *message) {
     memset(outgoing, 0, sizeof(*outgoing));
@@ -107,34 +111,60 @@ static void build_tally(char *buf, size_t len)
         "Candidate A: %d\nCandidate B: %d\nCandidate C: %d\nCandidate D: %d", vote_tally[0], vote_tally[1], vote_tally[2], vote_tally[3]);
 }
 
-static int bulletin_lookup(uint64_t encrypted_vote, char *buf, size_t len) {
-    for (int i = 0; i < bulletin_count; i++) {
-        if (bulletin_board[i].encrypted_vote == encrypted_vote) {
-            snprintf(buf, len, "Encrypted Vote: %" PRIu64 "\nCandidate: %u", encrypted_vote, bulletin_board[i].candidate_id);
+static int bulletin_lookup(const uint8_t *encrypted_vote,
+                           uint32_t encrypted_vote_len,
+                           char *buf,
+                           size_t len) {
+    for (uint32_t i = 0; i < bulletin_count; i++) {
+        if (bulletin_board[i].encrypted_vote_len == encrypted_vote_len &&
+            memcmp(bulletin_board[i].encrypted_vote,
+                   encrypted_vote,
+                   encrypted_vote_len) == 0) {
+
+            snprintf(buf, len,
+                     "Receipt ID: %u -> Candidate %u\n",
+                     bulletin_board[i].receipt_id,
+                     bulletin_board[i].candidate_id);
             return 0;
         }
     }
 
-    snprintf(buf, len, "Vote not found on bulletin board.");
+    snprintf(buf, len, "Encrypted vote not found.\n");
     return -1;
 }
 
-static void full_bulletin(char *buf, size_t len) {
-    int offset = 0;
+static int bulletin_full(char *buf, size_t len) {
+    size_t offset = 0;
 
-    if (bulletin_count == 0) {
-        snprintf(buf + offset, len - offset, "No votes recorded.\n");
-        return;
-    }
+    for (uint32_t i = 0; i < bulletin_count; i++) {
+        int written = snprintf(buf + offset, len - offset, "Encrypted vote: ");
 
-    for (int i = 0; i < bulletin_count; i++) {
-        int vote = snprintf(buf + offset, len - offset, "%" PRIu64 " -> Candidate %u\n", bulletin_board[i].encrypted_vote, bulletin_board[i].candidate_id);
-
-        if (vote < 0 || vote >= (int)(len - offset)) {
-            break;
+        if (written < 0 || (size_t)written >= len - offset) {
+            return -1;
         }
-        offset += vote;
+        offset += (size_t)written;
+
+        for (uint32_t j = 0; j < bulletin_board[i].encrypted_vote_len; j++) {
+            written = snprintf(buf + offset, len - offset,
+                               "%02X", bulletin_board[i].encrypted_vote[j]);
+
+            if (written < 0 || (size_t)written >= len - offset) {
+                return -1;
+            }
+            offset += (size_t)written;
+        }
+
+        written = snprintf(buf + offset, len - offset,
+                           " -> Candidate %u\n",
+                           bulletin_board[i].candidate_id);
+
+        if (written < 0 || (size_t)written >= len - offset) {
+            return -1;
+        }
+        offset += (size_t)written;
     }
+
+    return 0;
 }
 
 static void voter_id_to_key_string(uint32_t voter_id, char *out, size_t out_len) {
@@ -192,7 +222,7 @@ static void process_message(ClientSession *session,
 
             // tally
             if (session->voter_id == 0) {
-                char buf[256];
+                char buf[MESSAGE_PAYLOAD_LEN];
                 build_tally(buf, sizeof(buf));
 
                 outgoing->type = MSG_STATUS;
@@ -205,14 +235,14 @@ static void process_message(ClientSession *session,
 
             // bulletin board & lookup
             if (session->voter_id == 9999) {
-                char buf[512];
+                char buf[MESSAGE_PAYLOAD_LEN];
                 outgoing->type = MSG_STATUS;
 
-                if (incoming->value == 0) {  // full bulletin
-                    full_bulletin(buf, sizeof(buf));
+                if (incoming->value_len == 0) {  // full bulletin
+                    bulletin_full(buf, sizeof(buf));
                     outgoing->status = STATUS_YES;
                 } else {  // lookup
-                    if (bulletin_lookup(incoming->value, buf, sizeof(buf)) == 0) {
+                    if (bulletin_lookup(incoming->value, incoming->value_len, buf, sizeof(buf)) == 0) {
                         outgoing->status = STATUS_YES;
                     } else {
                         outgoing->status = STATUS_NO;
@@ -381,6 +411,17 @@ static void process_message(ClientSession *session,
                 return;
             }
 
+            if (bulletin_count < MAX_BULLETIN_ENTRIES) {
+                memcpy(
+                    bulletin_board[bulletin_count].encrypted_vote,
+                    incoming->value,
+                    incoming->value_len
+                );
+
+                bulletin_board[bulletin_count].encrypted_vote_len =
+                    incoming->value_len;
+            }
+
             // decrypted_vote =
             //     rsa_decrypt_uint64(incoming->value, ballot_priv->d, ballot_priv->n);
 
@@ -409,6 +450,8 @@ static void process_message(ClientSession *session,
                 vote_tally[session->selected_choice - 1]++;
             }
 
+            
+
             session->receipt_id = next_receipt_id();
 
             voter_id_to_key_string(session->voter_id,
@@ -419,12 +462,15 @@ static void process_message(ClientSession *session,
                 set_error(outgoing, "Failed to record used voter.");
                 session->state = STATE_DONE;
                 return;
-            }
+            }   
 
-            // bulletin board once vote accepted
-            if (bulletin_count < MAX_BULLETIN) {
-                bulletin_board[bulletin_count].encrypted_vote = incoming;
-                bulletin_board[bulletin_count].candidate_id = session->selected_choice;
+            if (bulletin_count < MAX_BULLETIN_ENTRIES) {
+                bulletin_board[bulletin_count].receipt_id =
+                    session->receipt_id;
+
+                bulletin_board[bulletin_count].candidate_id =
+                    session->selected_choice;
+
                 bulletin_count++;
             }
 
@@ -441,8 +487,10 @@ static void process_message(ClientSession *session,
                 return;
             }
 
-            encrypted_receipt_value =
-                rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+            // encrypted_receipt_value =
+            //     rsa_encrypt_uint64(receipt_code_value, auth_pub->e, auth_pub->n);
+
+            // encrypted_receipt_value = rsa_encrypt_bytes(receipt_code_value, auth_pub->e, auth_pub->n)
 
             cipher_len = snprintf((char *)ciphertext_buf,
                                   sizeof(ciphertext_buf),
@@ -479,7 +527,25 @@ static void process_message(ClientSession *session,
                 set_error(outgoing, "Failed to format receipt.");
                 session->state = STATE_DONE;
                 return;
-            }
+            }   
+
+            uint8_t receipt_bytes[8];
+            size_t receipt_len = 0;
+
+            uint8_t encrypted_receipt[RSA_MAX_BYTES];
+            size_t encrypted_receipt_len = 0;
+
+            u64_to_bytes(receipt_code_value, receipt_bytes, &receipt_len);
+
+            rsa_encrypt_bytes(
+                receipt_bytes, receipt_len,
+                auth_pub->n_bytes, auth_pub->n_len,
+                auth_pub->e_bytes, auth_pub->e_len,
+                encrypted_receipt, &encrypted_receipt_len
+            );
+
+            memcpy(outgoing->value, encrypted_receipt, encrypted_receipt_len);
+            outgoing->value_len = encrypted_receipt_len;
 
             outgoing->type = MSG_RECEIPT;
             outgoing->status = STATUS_YES;

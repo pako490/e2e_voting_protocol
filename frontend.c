@@ -116,17 +116,27 @@ int main(void) {
         return 1;
     }
 
+    // bulletin board case
     if (voter_id == 9999) {
-        uint64_t encrypted_vote = 0;
+        uint64_t lookup_value = 0;
+        uint8_t lookup_bytes[8];
+        size_t lookup_len = 0;
 
         printf("Enter encrypted vote to lookup (0 = show full bulletin): ");
-        scanf("%llu", (unsigned long long*)&encrypted_vote);
+        scanf("%llu", (unsigned long long *)&lookup_value);
 
         memset(&outgoing, 0, sizeof(outgoing));
         outgoing.type = MSG_HELLO;
         outgoing.status = STATUS_NONE;
         outgoing.voter_id = 9999;
-        outgoing.value = encrypted_vote;
+
+        if (lookup_value != 0) {
+            u64_to_bytes(lookup_value, lookup_bytes, &lookup_len);
+            memcpy(outgoing.value, lookup_bytes, lookup_len);
+            outgoing.value_len = lookup_len;
+        } else {
+            outgoing.value_len = 0;
+        }
 
         send_message(sock_fd, &outgoing, sizeof(outgoing));
         recv_message(sock_fd, &incoming, sizeof(incoming), &received_size);
@@ -263,8 +273,13 @@ int main(void) {
         encrypted_vote,   &encrypted_vote_len
     );
 
-    // Vote
-        printf("[DEBUG] Encrypted vote: %llu\n", (unsigned long long)encrypted_vote);
+    //checking vote value
+    printf("[DEBUG] Encrypted vote: ");
+    for (size_t i = 0; i < encrypted_vote_len; i++) {
+        printf("%02X", encrypted_vote[i]);
+    }
+    printf("\n");
+
     memset(&outgoing, 0, sizeof(outgoing));
     outgoing.type      = MSG_VOTE;
     outgoing.status    = STATUS_NONE;

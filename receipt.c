@@ -45,7 +45,7 @@ void generate_receipt(const CodeCard *card,
     for (int i = 0; i < NUM_CANDIDATES; i++) {
         receipt->entries[i].candidate_id = card->entries[i].candidate_id;
 
-        if ((int)card->entries[i].candidate_id == selected_candidate_id) {
+        if ((uint32_t)card->entries[i].candidate_id == selected_candidate_id) {
             strcpy(receipt->entries[i].verification_code, card->confirm_code);
         } else {
             derive_fake_code(card->receipt_seed,
