@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <openssl/bn.h>
 
 #include "protocol.h"
 #include "comm.h"
