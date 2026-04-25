@@ -132,6 +132,7 @@ int rsa_encrypt_bytes(
     const uint8_t *e_bytes, size_t e_len,
     uint8_t       *out,     size_t *out_len
 ) {
+    // printf("encrypted message");
     return mod_exp_bytes(in, in_len, e_bytes, e_len, n_bytes, n_len, out, out_len);
 }
 
@@ -142,5 +143,6 @@ int rsa_decrypt_bytes(
     const uint8_t *d_bytes, size_t d_len,
     uint8_t       *out,     size_t *out_len
 ) {
+    // printf("decrypted message");
     return mod_exp_bytes(in, in_len, d_bytes, d_len, n_bytes, n_len, out, out_len);
 }

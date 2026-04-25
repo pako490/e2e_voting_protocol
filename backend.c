@@ -10,8 +10,9 @@
 #include "protocol.h"
 #include "comm.h"
 #include "storage.h"
-#include "keyloader.h"
+
 #include "rsa_openssl.h" //saving the best for last
+#include "key.h"
 #include "codecard.h"
 
 // RSA Helpers
@@ -49,6 +50,7 @@ typedef struct {
 } ClientSession;
 
 static PublicKeyList voter_public_keys;
+static PublicKeyList ballot_public_keys;
 static PrivateKeyList ballot_private_keys;
 
 static uint32_t next_receipt_id(void) {
@@ -371,7 +373,7 @@ int main(void) {
 
     //--------------LOADS DATA -------------------//
 
-    if (load_valid_keys_binary("public_auth_keys.bin") < 0) {
+    if (load_valid_keys_binary("keys/public_auth_keys.bin") < 0) {
         fprintf(stderr, "[BACKEND] Failed to load valid voter keys\n");
         return 1;
     }
@@ -381,16 +383,20 @@ int main(void) {
         return 1;
     }
 
-    if (load_public_key_list_bin("public_ballot_keys.bin", &voter_public_keys) < 0) {
-        fprintf(stderr, "[BACKEND] Failed to load public key list\n");
+    if (load_public_key_list_bin("keys/public_auth_keys.bin", &voter_public_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load voter public key list\n");
         return 1;
     }
 
-    if (load_private_key_list_bin("ballot_priv_keys.bin", &ballot_private_keys) < 0) {
+    if (load_public_key_list_bin("keys/public_ballot_keys.bin", &ballot_public_keys) < 0) {
+        fprintf(stderr, "[BACKEND] Failed to load ballot public key list\n");
+        return 1;
+    }
+
+    if (load_private_key_list_bin("keys/ballot_priv_keys.bin", &ballot_private_keys) < 0) {
         fprintf(stderr, "[BACKEND] Failed to load ballot private key list\n");
         return 1;
     }
-
 
     init_used_keys();
 

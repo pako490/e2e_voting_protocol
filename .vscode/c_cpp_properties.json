@@ -32,6 +32,18 @@
             "cppStandard": "c++17",
             "intelliSenseMode": "windows-msvc-x64"
         }
+    ,
+    {
+        "name": "macOS",
+        "includePath": [
+          "${workspaceFolder}/**",
+          "/opt/homebrew/opt/openssl@3/include"
+        ],
+        "defines": [],
+        "compilerPath": "/usr/bin/gcc",
+        "cStandard": "c17",
+        "intelliSenseMode": "macos-clang-arm64"
+      }
     ],
     "version": 4
 }

@@ -1,9 +1,11 @@
 #ifndef RSA_OPENSSL_H
 #define RSA_OPENSSL_H
 
+#include "protocol.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <openssl/bn.h>
+
 
 #define KEY_BITS 1024
 
