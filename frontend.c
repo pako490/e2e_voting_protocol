@@ -25,6 +25,15 @@ static uint64_t bytes_to_u64(const uint8_t *in, size_t len) {
     return val;
 }
 
+static void hex_to_bytes(const char *hex, uint8_t *bytes, size_t *len) {
+    size_t hex_len = strlen(hex);
+    *len = hex_len / 2;
+
+    for (size_t i = 0; i < *len; i++) {
+        sscanf(hex + 2*i, "%2hhx", &bytes[i]);
+    }
+}
+
 /*
  * Read a hex string from stdin and convert it to a big-endian byte array
  * via OpenSSL BIGNUM so the width is correct.
@@ -118,22 +127,27 @@ int main(void) {
 
     // bulletin board case
     if (voter_id == 9999) {
-        uint64_t lookup_value = 0;
-        uint8_t lookup_bytes[8];
+        char lookup_value[1024];
+        uint8_t lookup_bytes[RSA_MAX_BYTES];
         size_t lookup_len = 0;
 
         printf("Enter encrypted vote to lookup (0 = show full bulletin): ");
-        scanf("%llu", (unsigned long long *)&lookup_value);
+        scanf("%1023s", lookup_value);
 
         memset(&outgoing, 0, sizeof(outgoing));
         outgoing.type = MSG_HELLO;
         outgoing.status = STATUS_NONE;
         outgoing.voter_id = 9999;
 
-        if (lookup_value != 0) {
-            u64_to_bytes(lookup_value, lookup_bytes, &lookup_len);
-            memcpy(outgoing.value, lookup_bytes, lookup_len);
-            outgoing.value_len = lookup_len;
+        if (strcmp(lookup_value, "0") != 0) {
+            hex_to_bytes(lookup_value, lookup_bytes, &lookup_len);
+
+            size_t padded_len = RSA_MAX_BYTES;
+            uint8_t padded[RSA_MAX_BYTES] = {0};
+
+            memcpy(padded + (padded_len - lookup_len), lookup_bytes, lookup_len);
+            memcpy(outgoing.value, padded, padded_len);
+            outgoing.value_len = padded_len;
         } else {
             outgoing.value_len = 0;
         }

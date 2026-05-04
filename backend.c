@@ -116,17 +116,45 @@ static int bulletin_lookup(const uint8_t *encrypted_vote,
                            char *buf,
                            size_t len) {
     for (uint32_t i = 0; i < bulletin_count; i++) {
-        if (bulletin_board[i].encrypted_vote_len == encrypted_vote_len &&
-            memcmp(bulletin_board[i].encrypted_vote,
-                   encrypted_vote,
-                   encrypted_vote_len) == 0) {
 
-            snprintf(buf, len,
-                     "Receipt ID: %u -> Candidate %u\n",
-                     bulletin_board[i].receipt_id,
-                     bulletin_board[i].candidate_id);
-            return 0;
+        uint32_t stored_len = bulletin_board[i].encrypted_vote_len;
+
+        if (stored_len > encrypted_vote_len) {
+            size_t offset = stored_len - encrypted_vote_len;
+
+            if (memcmp(bulletin_board[i].encrypted_vote + offset,
+                       encrypted_vote,
+                       encrypted_vote_len) == 0) {
+                goto found;
+            }
         }
+
+        else if (encrypted_vote_len > stored_len) {
+            size_t offset = encrypted_vote_len - stored_len;
+
+            if (memcmp(bulletin_board[i].encrypted_vote,
+                       encrypted_vote + offset,
+                       stored_len) == 0) {
+                goto found;
+            }
+        }
+
+        else {
+            if (memcmp(bulletin_board[i].encrypted_vote,
+                       encrypted_vote,
+                       stored_len) == 0) {
+                goto found;
+            }
+        }
+
+        continue;
+
+    found:
+        snprintf(buf, len,
+                 "Receipt ID: %u -> Candidate %u\n",
+                 bulletin_board[i].receipt_id,
+                 bulletin_board[i].candidate_id);
+        return 0;
     }
 
     snprintf(buf, len, "Encrypted vote not found.\n");
