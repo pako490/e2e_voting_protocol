@@ -337,8 +337,13 @@ int main(void) {
     );
 
     receipt_value = bytes_to_u64(decrypted_receipt, decrypted_receipt_len);
-    codecard_text_for_value(receipt_value, receipt_text, sizeof(receipt_text));
+    uint32_t confirmed_choice = (uint32_t)(receipt_value & 0xFF);
 
+    snprintf(receipt_text,
+            sizeof(receipt_text),
+            "Choice %u confirmed",
+            confirmed_choice);
+            
     printf("\n[FRONTEND] Receipt ID:         %u\n",  incoming.receipt_id);
     printf("[FRONTEND] Receipt code value: %llu\n", (unsigned long long)receipt_value);
     printf("[FRONTEND] Code card result:   %s\n",   receipt_text);

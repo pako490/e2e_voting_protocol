@@ -502,11 +502,14 @@ static void process_message(ClientSession *session,
                 bulletin_count++;
             }
 
-            if (codecard_value_for_choice(session->selected_choice, &receipt_code_value) < 0) {
-                set_error(outgoing, "Failed to create code card value.");
-                session->state = STATE_DONE;
-                return;
-            }
+            uint64_t random_part = ((uint64_t)rand() << 32) ^ (uint64_t)rand();
+
+            /*
+            lower 8 bits store choice
+            upper bits are random
+            */
+            receipt_code_value = (random_part & 0xFFFFFFFFFFFFFF00ULL)
+                            | (uint64_t)session->selected_choice;
 
             auth_pub = find_public_key(&voter_public_keys, session->auth_key_id);
             if (auth_pub == NULL) {
