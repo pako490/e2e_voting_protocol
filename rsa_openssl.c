@@ -20,6 +20,53 @@ void print_bn(const char *label, BIGNUM *bn) {
     OPENSSL_free(hex);
 }
 
+static int generate_valid_e(BIGNUM *e, const BIGNUM *phi, BN_CTX *ctx) {
+    BIGNUM *g = BN_new();
+
+    if (e == NULL || phi == NULL || ctx == NULL || g == NULL) {
+        BN_free(g);
+        return -1;
+    }
+
+    do {
+        /*
+         * Pick random e where 0 <= e < phi.
+         */
+        if (!BN_rand_range(e, phi)) {
+            BN_free(g);
+            return -1;
+        }
+
+        /*
+         * Make sure e > 1.
+         */
+        if (BN_cmp(e, BN_value_one()) <= 0) {
+            BN_set_word(e, 3);
+        }
+
+        /*
+         * RSA public exponents are usually odd.
+         */
+        if (!BN_is_odd(e)) {
+            BN_add_word(e, 1);
+        }
+
+        /*
+         * Check gcd(e, phi) == 1.
+         * This means e has a modular inverse mod phi.
+         */
+        if (!BN_gcd(g, e, phi, ctx)) {
+            BN_free(g);
+            return -1;
+        }
+
+    } while (!BN_is_one(g));
+
+    BN_free(g);
+    return 0;
+}
+
+
 // Key gen
 
 int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
@@ -45,7 +92,7 @@ int rsa_generate_keys(RSAPublicKey *pub, RSAPrivateKey *priv, BN_CTX *ctx) {
     BN_sub(q1, q, BN_value_one());
     BN_mul(phi, p1, q1, ctx);
 
-    BN_set_word(e, 65537);
+    generate_valid_e(e, phi, ctx);
     BN_mod_inverse(d, e, phi, ctx);
 
     /* Public key */
