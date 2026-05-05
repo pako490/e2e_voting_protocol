@@ -598,6 +598,12 @@ static void process_message(ClientSession *session,
 }
 
 static void handle_client(int client_fd) {
+    struct timeval timeout;
+    timeout.tv_sec = 10;   // wait max 10 seconds
+    timeout.tv_usec = 0;
+
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    
     ClientSession session;
     ClientMessage incoming;
     ServerMessage outgoing;
@@ -612,7 +618,7 @@ static void handle_client(int client_fd) {
         received_size = 0;
 
         if (recv_message(client_fd, &incoming, sizeof(incoming), &received_size) < 0) {
-            perror("recv_message");
+            fprintf(stderr, "[BACKEND] Client timed out or disconnected\n");
             break;
         }
 
